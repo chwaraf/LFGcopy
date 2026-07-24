@@ -1,0 +1,7 @@
+## Interface: 20505
+## Title: LFGcopy
+## Notes: Copy LFG names/links, class colors, abbreviated dungeon/raid tags, smarter roles
+## Author: ChatGPT
+## Version: 6.2
+
+LFGcopy.lua

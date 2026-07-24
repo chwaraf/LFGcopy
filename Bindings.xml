@@ -1,0 +1,5 @@
+<Bindings>
+    <Binding name="LFGCOPY_TOGGLE" header="LFGCOPY">
+        LFGCopy_ToggleBinding()
+    </Binding>
+</Bindings>
