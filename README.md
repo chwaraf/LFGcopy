@@ -9,7 +9,7 @@ LFGcopy is a World of Warcraft addon that gives you a cleaner, more useful view 
   - leader name
   - member count
   - abbreviated dungeon/raid activity names
-  - the leader’s comment/description
+  - the leader's comment/description
   - player names with class colors and role icons
 - Lets you collapse or expand groups by clicking the leader line.
 - Provides quick actions for players:
@@ -19,7 +19,9 @@ LFGcopy is a World of Warcraft addon that gives you a cleaner, more useful view 
   - shift + right-click: open a small context menu with more options
 - Includes filters for:
   - search text
-  - “trinket only” mode for groups that contain a marked mage
+  - "trinket only" mode for groups that contain a marked mage
+- Adds a second "Watch" tab that holds groups you park (see Options below).
+- Adds optional per-group notes that stay visible even when a group is collapsed.
 - Supports a default keybind and slash commands.
 
 ## Features in more detail
@@ -34,13 +36,32 @@ Each LFG result is shown as a grouped row with a compact header and optional exp
 - Kara for Karazhan
 - BT for Black Temple
 
+### Watch tab (second tab) and parked groups
+
+The tab strip under the title bar has two tabs: **Results** and **Watch**.
+
+With the option **"Park collapsed groups on the second tab"** enabled, collapsing any group on the Results tab moves it to the Watch tab instead of folding it in place:
+
+- A parked group is shown only on the Watch tab (with its leader comment and note if enabled).
+- You can expand/collapse it there freely — expanding it does NOT move it back.
+- The only way to move it back is the small **^ arrow button** just left of its [+]/[-] marker. The group returns to the Results tab expanded.
+- The Watch tab button shows how many groups are parked, e.g. "Watch (2)".
+- Right-clicking a tab (or clicking the "Options" button) also offers "Move all parked groups back".
+
+### Notes per group
+
+With **"Show group notes"** enabled, every row shows a note area (on collapsed rows it shares the second line with the leader comment, right-aligned; on expanded rows it is a slim line under the comment). Click it to add or edit the note in a small popup:
+
+- The note stays visible even when the group is collapsed.
+- Notes follow the group across tabs and across collapse/expand cycles (session-only, keyed by group leader).
+
 ### Role handling
 
 Player role icons are shown based on the role data returned by the game API. The addon tries to infer the most useful role for display and will prefer the role information that makes the most sense for the listing type.
 
 ### Trinket filter
 
-The addon has a “Trinket: ON/OFF” toggle that highlights groups containing a mage who is marked as owning a trinket. It looks for a global table of mage names from another addon’s saved data, with a built-in fallback list.
+The addon has a "Trinket: ON/OFF" toggle that highlights groups containing a mage who is marked as owning a trinket. It looks for a global table of mage names from another addon's saved data, with a built-in fallback list.
 
 ## Installation
 
@@ -61,12 +82,25 @@ The addon has a “Trinket: ON/OFF” toggle that highlights groups containing a
 
 ### Controls
 
-- Click the leader name to collapse or expand a group.
+- Click the leader name to collapse, expand, or (optionally) park a group.
+- Click the ^ arrow to move a parked group back from the Watch tab.
+- Click the note text on a row to add/edit that group's note.
 - Right-click the leader name to whisper the leader.
 - Click a player name to copy it.
 - Shift-click a player name to copy a WarcraftLogs link.
 - Use the search box to filter results by leader, activity, description, or member name.
 - Use the trinket toggle to show only groups with a marked mage.
+- Click the Results/Watch tabs to switch between the two lists.
+- Click "Options" (or right-click a tab) to open the addon options menu.
+
+## Options
+
+Settings are saved in the LFGcopyDB SavedVariables file. Open the menu via the "Options" button on the tab strip (or right-click either tab):
+
+- **Park collapsed groups on the second tab** (default off) — collapsing a group moves it to the Watch tab; see "Watch tab" above.
+- **Show descriptions on collapsed groups** (default on) — the leader's comment is shown on the collapsed row (single line, dimmed).
+- **Show group notes** (default off) — enables the per-group note area described above.
+- **Show the second tab** (default on) — hides the Watch tab and sends any parked groups back to the Results tab.
 
 ## Configuration
 
@@ -78,9 +112,10 @@ The addon is mostly ready to use out of the box. If you want to change the trink
 
 ## Notes
 
-- The addon uses Blizzard’s LFG List API and will only work in a client/session where those APIs are available.
+- The addon uses Blizzard's LFG List API and will only work in a client/session where those APIs are available.
 - The addon requests fuller member information for search results so that more players show up correctly.
 - Some Blizzard-provided strings such as comments are displayed as text but may not be programmatically copyable.
+- Options persist through LFGcopyDB; per-group notes and parked/collapsed state are session-only on purpose.
 
 ## Author
 

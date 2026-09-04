@@ -317,10 +317,63 @@ local filterSearch = ""   -- lowercased search string
 -- forward declaration so the controls can trigger a rebuild
 local RefreshWindow
 
+-------------------------------------------------
+-- Options
+-------------------------------------------------
+-- Optionally persisted to SavedVariables (LFGcopyDB, declared in the .toc):
+-- defaults stay live while the addon runs, and the DB only overrides when a
+-- key already exists, so adding a new option never wipes old settings.
+local db = (type(LFGcopyDB) == "table") and LFGcopyDB or {}
+local function Opt(key, default)
+    if db[key] == nil then
+        db[key] = default
+    end
+    return db[key]
+end
+
+-- 1) On collapse, send the group to the second tab. The old collapsed look
+--    disappears entirely: after the header click the group is parked and is
+--    only visible on the second tab. Expanding a parked group never sends it
+--    back -- the arrow button next to the (+) marker is the only way back.
+local optParkOnCollapse = Opt("parkOnCollapse", false)
+
+-- 2) Show the group's leader description/comment even when collapsed (a dim
+--    line under the leader row on the first tab).
+local optCollapsedDesc = Opt("showCollapsedDescription", true)
+
+-- 3) Quick note per group. The note is always visible on the collapsed row
+--    (right of the description area) and as a slim line on expanded rows.
+local optQuickNote = Opt("quickNote", false)
+
+-- Show the parked groups tab bar. Turning it off also empties the watch tab
+-- (every parked group goes back to the first tab, expanded).
+local optSecondTab = Opt("secondTab", true)
+
+-- Which tab is shown. "results" = the normal first tab, "watch" = the second
+-- tab that parked groups live on.
+local activeTab = "results"
+
 -- Collapsed/expanded state per group. Clicking the leader name toggles this.
 -- Keyed mostly by leader name instead of resultID so folded groups stay folded
 -- after pressing Blizzard's "Search Again" button, which can assign new resultIDs.
 local collapsedGroups = {}
+
+-- Groups parked on the SECOND tab ("Watch"). A group lands here by collapsing
+-- it while the "park on collapse" option is on. While parked, the group is
+-- NOT shown on the first tab and stays on the second tab no matter what --
+-- expanding or collapsing it there only acts on the parked copy. The way back
+-- to the first tab is the return-arrow button next to the fold marker on the
+-- parked row ("Move all parked groups back" in the options menu does the same
+-- for every parked group at once; the menu toggle that hides the watch tab
+-- also sends everything back). Like collapsedGroups, entries are keyed by
+-- group key (leader name, see below), not resultID, so parked groups stay
+-- parked across "Search Again".
+local parkedGroups = {}
+
+-- Per-group notes entered by the player. Also keyed by group key. A note is
+-- attached to the group listing itself (not the fold state), so it is shown
+-- whenever the group is visible, on both tabs, collapsed or not.
+local groupNotes = {}
 
 -- "Trinket only" toggle button (vertically centered on the title bar)
 local trinketToggle = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
@@ -421,15 +474,335 @@ searchBox:HookScript("OnEditFocusLost", UpdatePlaceholder)
 UpdatePlaceholder(searchBox)
 
 -------------------------------------------------
+-- Single-line text helpers
+-------------------------------------------------
+-- Truncate a UTF-8 string to maxChars code points (safe: never splits a
+-- multi-byte character, and 1-byte continuation bytes don't count).
+local function TruncateCodepoints(s, maxChars)
+    local n = 0
+    for i = 1, #s do
+        local b = s:byte(i)
+        if b < 128 or b >= 192 then   -- start of a code point
+            n = n + 1
+            if n > maxChars then
+                return s:sub(1, i - 1)
+            end
+        end
+    end
+    return s
+end
+
+-- Clip a string so it fits a font string's single line at maxW pixels,
+-- appending "..." whenever anything had to be cut. Measures with the font
+-- string itself, so it is exact regardless of the font in use.
+local function ClipText(fs, s, maxW)
+    if not s or s == "" then
+        fs:SetText("")
+        return
+    end
+    fs:SetText(s)
+    if fs:GetStringWidth() <= maxW then return end
+
+    -- Reserve room for the ellipsis, then shrink (fast chunk pass, then a
+    -- slow one-char pass) until the text + "..." fits.
+    fs:SetText("...")
+    local dotW = fs:GetStringWidth()
+    local limit = maxW - dotW
+    if limit < 10 then limit = 10 end
+
+    local t = s
+    for i = 1, 8 do
+        fs:SetText(t)
+        local w = fs:GetStringWidth()
+        if w <= limit then break end
+        local cut = math.max(1, math.floor((w - limit) / 8))
+        t = TruncateCodepoints(t, math.max(1, #t - cut))
+    end
+    if fs:GetStringWidth() > limit then
+        while #t > 0 do
+            fs:SetText(t)
+            if fs:GetStringWidth() <= limit then break end
+            t = TruncateCodepoints(t, #t - 1)
+        end
+    end
+    fs:SetText(t .. "...")
+end
+
+-------------------------------------------------
+-- Group note popup
+-------------------------------------------------
+-- Notes are per group key and live in groupNotes above. They are NOT saved
+-- to disk on purpose: a note keyed by leader name would otherwise stick
+-- around forever, so notes live for the session (like collapse state does).
+local function TrimNoteText(s)
+    s = s or ""
+    s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    return s
+end
+
+local function CloseNotePopup()
+    if StaticPopup_Hide then
+        StaticPopup_Hide("LFGCOPY_GROUP_NOTE")
+    end
+end
+
+StaticPopupDialogs["LFGCOPY_GROUP_NOTE"] = {
+    text = "Note for this group (stays visible on the collapsed row)",
+    button1 = "Save",
+    button2 = "Cancel",
+    hasEditBox = true,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    OnShow = function(self, data)
+        local editBox = self.EditBox or self.editBox
+        if editBox then
+            editBox:SetMaxLetters(60)
+            editBox:SetText((data and data.key and groupNotes[data.key]) or "")
+            editBox:HighlightText()
+            editBox:SetFocus()
+            editBox:SetScript("OnEscapePressed", CloseNotePopup)
+        end
+    end,
+    OnAccept = function(self, data)
+        if not data or not data.key then return end
+        local editBox = self.EditBox or self.editBox
+        local note = TrimNoteText(editBox and editBox:GetText())
+        if note == "" then
+            groupNotes[data.key] = nil
+        else
+            groupNotes[data.key] = note
+        end
+        if RefreshWindow then RefreshWindow() end
+    end,
+    EditBoxOnEscapePressed = CloseNotePopup,
+}
+
+local function ShowGroupNotePopup(key)
+    StaticPopup_Show("LFGCOPY_GROUP_NOTE", nil, nil, { key = key })
+end
+
+-------------------------------------------------
+-- Options menu (right-click the tab strip or click "Options")
+-------------------------------------------------
+local function ApplyOption(key, value)
+    db[key] = value
+    if key == "parkOnCollapse" then
+        optParkOnCollapse = value
+    elseif key == "showCollapsedDescription" then
+        optCollapsedDesc = value
+    elseif key == "quickNote" then
+        optQuickNote = value
+    elseif key == "secondTab" then
+        optSecondTab = value
+        if not value then
+            -- Watch tab disabled: every parked group goes home (expanded).
+            for k in pairs(parkedGroups) do
+                parkedGroups[k] = nil
+                collapsedGroups[k] = false
+            end
+            if activeTab == "watch" then
+                activeTab = "results"
+            end
+        end
+    end
+end
+
+local function MoveAllParkedBack()
+    for k in pairs(parkedGroups) do
+        parkedGroups[k] = nil
+        collapsedGroups[k] = false   -- they return expanded
+    end
+    activeTab = "results"
+    if RefreshWindow then RefreshWindow() end
+end
+
+local function ShowOptionsMenu(anchor)
+    -- Modern menu API
+    if MenuUtil and MenuUtil.CreateContextMenu then
+        MenuUtil.CreateContextMenu(anchor, function(owner, root)
+            root:CreateTitle("LFGcopy options")
+            local function item(text, checked, onClick)
+                local mark = checked and "[x]" or "[ ]"
+                root:CreateButton(mark .. " " .. text, onClick)
+            end
+            item("Park collapsed groups on the second tab", optParkOnCollapse,
+                function() ApplyOption("parkOnCollapse", not optParkOnCollapse) if RefreshWindow then RefreshWindow() end end)
+            item("Show descriptions on collapsed groups", optCollapsedDesc,
+                function() ApplyOption("showCollapsedDescription", not optCollapsedDesc) if RefreshWindow then RefreshWindow() end end)
+            item("Show group notes", optQuickNote,
+                function() ApplyOption("quickNote", not optQuickNote) if RefreshWindow then RefreshWindow() end end)
+            item("Show the second tab", optSecondTab,
+                function() ApplyOption("secondTab", not optSecondTab) if RefreshWindow then RefreshWindow() end end)
+            if next(parkedGroups) then
+                root:CreateSeparator()
+                root:CreateButton("Move all parked groups back", MoveAllParkedBack)
+            end
+        end)
+        return
+    end
+
+    -- Fallback: classic EasyMenu
+    if EasyMenu then
+        local menu = {
+            { text = "LFGcopy options", isTitle = true, notCheckable = true },
+            { text = "Park collapsed groups on the second tab", checked = optParkOnCollapse, notCheckable = false, func = function()
+                ApplyOption("parkOnCollapse", not optParkOnCollapse)
+                if RefreshWindow then RefreshWindow() end
+            end },
+            { text = "Show descriptions on collapsed groups", checked = optCollapsedDesc, notCheckable = false, func = function()
+                ApplyOption("showCollapsedDescription", not optCollapsedDesc)
+                if RefreshWindow then RefreshWindow() end
+            end },
+            { text = "Show group notes", checked = optQuickNote, notCheckable = false, func = function()
+                ApplyOption("quickNote", not optQuickNote)
+                if RefreshWindow then RefreshWindow() end
+            end },
+            { text = "Show the second tab", checked = optSecondTab, notCheckable = false, func = function()
+                ApplyOption("secondTab", not optSecondTab)
+                if RefreshWindow then RefreshWindow() end
+            end },
+        }
+        if next(parkedGroups) then
+            menu[#menu + 1] = { text = "Move all parked groups back", notCheckable = true, func = MoveAllParkedBack }
+        end
+        local menuFrame = LFGCopyMenuFrame or CreateFrame("Frame", "LFGCopyMenuFrame", UIParent, "UIDropDownMenuTemplate")
+        EasyMenu(menu, menuFrame, "cursor", 0, 0, "MENU")
+    end
+end
+
+-------------------------------------------------
+-- Tab strip ("Results" / "Watch") under the title bar
+-------------------------------------------------
+-- The second tab ("Watch") holds parked groups. Left-click a tab to switch,
+-- right-click the strip (or click "Options") for the options menu above.
+local TAB_BAR_H = 22
+
+local tabStrip = CreateFrame("Frame", nil, frame)
+tabStrip:SetPoint("TOPLEFT", 12, -32)
+tabStrip:SetSize(676, TAB_BAR_H)
+
+-- thin divider under the whole strip
+tabStrip.divider = tabStrip:CreateTexture(nil, "BACKGROUND")
+tabStrip.divider:SetColorTexture(0.4, 0.4, 0.4, 0.25)
+tabStrip.divider:SetPoint("BOTTOMLEFT", tabStrip, "BOTTOMLEFT", 0, -2)
+tabStrip.divider:SetPoint("BOTTOMRIGHT", tabStrip, "BOTTOMRIGHT", 0, -2)
+tabStrip.divider:SetHeight(1)
+
+local function MakeTabButton(name, text)
+    local btn = CreateFrame("Button", nil, tabStrip)
+    btn.tab = name
+    btn:SetSize(100, TAB_BAR_H)
+    btn.label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    btn.label:SetPoint("LEFT", btn, "LEFT", 0, 0)
+    btn.label:SetJustifyH("LEFT")
+    btn.label:SetText(text)
+    btn.activeBar = btn:CreateTexture(nil, "OVERLAY")
+    btn.activeBar:SetColorTexture(0.9, 0.82, 0.4, 1)
+    btn.activeBar:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", 0, -3)
+    btn.activeBar:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", 0, -3)
+    btn.activeBar:SetHeight(2)
+    btn.activeBar:Hide()
+    btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    btn:SetScript("OnClick", function(self, mouseButton)
+        if mouseButton == "RightButton" then
+            ShowOptionsMenu(self)
+            return
+        end
+        local tab = self.tab
+        if tab == "watch" and not optSecondTab then return end
+        if activeTab == tab then return end
+        activeTab = tab
+        if RefreshWindow then RefreshWindow() end
+    end)
+    btn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        if self.tab == "watch" then
+            GameTooltip:AddLine("Second tab: groups you park (collapsed) here", 1, 1, 1)
+            GameTooltip:AddLine("Left-click: switch tab", 0.7, 0.7, 0.7)
+            GameTooltip:AddLine("Right-click: options", 0.7, 0.7, 0.7)
+        else
+            GameTooltip:AddLine("Left-click: switch tab", 0.7, 0.7, 0.7)
+            GameTooltip:AddLine("Right-click: options", 0.7, 0.7, 0.7)
+        end
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    return btn
+end
+
+local tabResults = MakeTabButton("results", "Results")
+tabResults:SetPoint("LEFT", tabStrip, "LEFT", 2, 0)
+
+local tabWatch = MakeTabButton("watch", "Watch")
+tabWatch:SetPoint("LEFT", tabResults, "RIGHT", 18, 0)
+
+local optionsButton = CreateFrame("Button", nil, tabStrip)
+optionsButton:SetSize(58, 18)
+optionsButton:SetPoint("RIGHT", tabStrip, "RIGHT", -2, -1)
+optionsButton.text = optionsButton:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+optionsButton.text:SetPoint("CENTER")
+optionsButton.text:SetText("Options")
+optionsButton.text:SetTextColor(0.7, 0.7, 0.7)
+optionsButton:SetScript("OnClick", function(self)
+    ShowOptionsMenu(self)
+end)
+optionsButton:SetScript("OnEnter", function(self)
+    self.text:SetTextColor(1, 1, 1)
+    GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+    GameTooltip:AddLine("LFGcopy options", 1, 1, 1)
+    GameTooltip:AddLine("Click: park-on-collapse, collapsed descriptions, group notes", 0.7, 0.7, 0.7)
+    GameTooltip:Show()
+end)
+optionsButton:SetScript("OnLeave", function(self)
+    self.text:SetTextColor(0.7, 0.7, 0.7)
+    GameTooltip:Hide()
+end)
+
+-- Paints the two tabs after every refresh: label (with live counts), active
+-- color/underline, and hides the watch tab while the option is off.
+local function UpdateTabStrip(resultCount, parkedCount)
+    local function paint(btn, active, text)
+        btn.label:SetText(text)
+        if active then
+            btn.label:SetTextColor(1, 0.85, 0.4)
+            btn.activeBar:Show()
+        else
+            btn.label:SetTextColor(0.62, 0.62, 0.62)
+            btn.activeBar:Hide()
+        end
+    end
+
+    paint(tabResults, activeTab == "results", string.format("Results (%d)", resultCount))
+    if optSecondTab then
+        tabWatch:Show()
+        local watchLabel = parkedCount > 0 and string.format("Watch (%d)", parkedCount) or "Watch"
+        paint(tabWatch, activeTab == "watch", watchLabel)
+    else
+        tabWatch:Hide()
+    end
+end
+
+-------------------------------------------------
 -- Scroll
 -------------------------------------------------
 local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-scroll:SetPoint("TOPLEFT", 10, -30)
+-- Tab strip takes up room below the title bar.
+scroll:SetPoint("TOPLEFT", 10, -(30 + TAB_BAR_H + 2))
 scroll:SetPoint("BOTTOMRIGHT", -30, 10)
 
 local content = CreateFrame("Frame", nil, scroll)
 content:SetSize(700, 1)
 scroll:SetScrollChild(content)
+
+-- Friendly hint shown when the second (Watch) tab is empty.
+local emptyHint = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+emptyHint:SetPoint("TOPLEFT", content, "TOPLEFT", 14, -14)
+emptyHint:SetWidth(660)
+emptyHint:SetJustifyH("LEFT")
+emptyHint:SetSpacing(4)
+emptyHint:SetTextColor(0.6, 0.6, 0.6)
+emptyHint:Hide()
 
 -- Slow mousewheel scrolling to ~50% speed by driving the scrollbar
 -- directly (keeps the slider and wheel perfectly in sync).
@@ -564,23 +937,120 @@ local function AcquireRow(index)
 
         if mouseButton == "RightButton" then
             OpenWhisper(parent.leaderName)
-        elseif parent.groupKey then
-            collapsedGroups[parent.groupKey] = not collapsedGroups[parent.groupKey]
-            if RefreshWindow then RefreshWindow() end
+            return
         end
+
+        local key = parent.groupKey
+        if not key then return end
+
+        if parent.entryType == "parked" then
+            -- Second tab: the header click only folds/unfolds the parked
+            -- copy. It NEVER sends the group back to the first tab -- the
+            -- only way back is the return-arrow button next to the marker.
+            collapsedGroups[key] = not collapsedGroups[key]
+        elseif collapsedGroups[key] then
+            -- Collapsed row on the first tab: expand it. (With "park on
+            -- collapse" on, collapsed first-tab rows are normally migrated
+            -- to the watch tab right away; this path covers the classic
+            -- mode and any leftovers from an older session.)
+            collapsedGroups[key] = false
+        elseif optParkOnCollapse and optSecondTab then
+            -- First tab + "park on collapse": collapsing IS the send-to-
+            -- second-tab gesture, so the group leaves this tab entirely.
+            collapsedGroups[key] = true
+            parkedGroups[key] = true
+        else
+            -- Classic fold: the row stays here, collapsed.
+            collapsedGroups[key] = true
+        end
+        if RefreshWindow then RefreshWindow() end
     end)
     row.headerButton:SetScript("OnEnter", function(self)
         local parent = self:GetParent()
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        if parent and parent.isCollapsed then
-            GameTooltip:AddLine("Left-click: expand this group", 1, 1, 1)
-        else
-            GameTooltip:AddLine("Left-click: collapse this group", 1, 1, 1)
+        if parent then
+            if parent.entryType == "parked" then
+                if parent.isCollapsed then
+                    GameTooltip:AddLine("Left-click: expand this group on the second tab", 1, 1, 1)
+                else
+                    GameTooltip:AddLine("Left-click: collapse this group (it stays on the second tab)", 1, 1, 1)
+                end
+            elseif parent.isCollapsed then
+                GameTooltip:AddLine("Left-click: expand this group", 1, 1, 1)
+            elseif optParkOnCollapse and optSecondTab then
+                GameTooltip:AddLine("Left-click: send this group to the second tab", 1, 1, 1)
+            else
+                GameTooltip:AddLine("Left-click: collapse this group", 1, 1, 1)
+            end
         end
         GameTooltip:AddLine("Right-click: whisper leader", 0.7, 0.7, 0.7)
         GameTooltip:Show()
     end)
     row.headerButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    -- Return-arrow button: the ONLY control that moves a parked group back
+    -- to the first tab. It sits just left of the fold marker ("near the
+    -- plus"), and is shown only on parked rows (second tab).
+    row.returnButton = CreateFrame("Button", nil, row)
+    row.returnButton:SetSize(16, 16)
+    row.returnButton:SetPoint("LEFT", row, "LEFT", 9, 0)
+    row.returnButton:RegisterForClicks("LeftButtonUp")
+    row.returnButton.text = row.returnButton:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    row.returnButton.text:SetPoint("CENTER", row.returnButton, "CENTER", 0, 1)
+    row.returnButton.text:SetText("^")
+    row.returnButton.text:SetTextColor(0.9, 0.82, 0.4)
+    row.returnButton:SetScript("OnClick", function(self)
+        local parent = self:GetParent()
+        if parent and parent.groupKey then
+            parkedGroups[parent.groupKey] = nil
+            collapsedGroups[parent.groupKey] = false   -- returns expanded
+            if RefreshWindow then RefreshWindow() end
+        end
+    end)
+    row.returnButton:SetScript("OnEnter", function(self)
+        local parent = self:GetParent()
+        self.text:SetTextColor(1, 1, 1)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Move this group back to the first tab (expanded)", 1, 1, 1)
+        GameTooltip:AddLine("Only this button moves it back -- expanding does not", 0.7, 0.7, 0.7)
+        GameTooltip:Show()
+    end)
+    row.returnButton:SetScript("OnLeave", function(self)
+        self.text:SetTextColor(0.9, 0.82, 0.4)
+        GameTooltip:Hide()
+    end)
+    row.returnButton:Hide()
+
+    -- Note line (clickable). Shown when the notes option is on: on collapsed
+    -- rows it shares the description line (right side), on expanded rows it
+    -- is a slim line under the description. Clicking it opens the note popup.
+    row.noteButton = CreateFrame("Button", nil, row)
+    row.noteButton:SetHeight(14)
+    row.noteButton:RegisterForClicks("LeftButtonUp")
+    row.noteButton.text = row.noteButton:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    row.noteButton.text:SetPoint("RIGHT", row.noteButton, "RIGHT", -2, 0)
+    row.noteButton.text:SetJustifyH("RIGHT")
+    row.noteButton:SetScript("OnClick", function(self)
+        local parent = self:GetParent()
+        if parent and parent.groupKey then
+            ShowGroupNotePopup(parent.groupKey)
+        end
+    end)
+    row.noteButton:SetScript("OnEnter", function(self)
+        local parent = self:GetParent()
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        if parent and parent.groupKey and groupNotes[parent.groupKey] then
+            GameTooltip:AddLine("Note for this group:", 1, 1, 1)
+            GameTooltip:AddLine(groupNotes[parent.groupKey], 1, 0.82, 0.4, true)
+            GameTooltip:AddLine("Left-click: edit the note", 0.7, 0.7, 0.7)
+        else
+            GameTooltip:AddLine("Left-click: add a note to this group", 1, 1, 1)
+            GameTooltip:AddLine("The note stays visible even when the group is collapsed", 0.7, 0.7, 0.7)
+        end
+        GameTooltip:Show()
+    end)
+    row.noteButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    row.noteButton:Hide()
 
     -- Activity / what the group is listed for (right of the leader name).
     row.activity = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -1105,6 +1575,29 @@ function RefreshWindow()
     end
     local groups = BuildGroups()
 
+    -- With "park on collapse" on, EVERY collapsed group belongs on the second
+    -- tab. This migrates groups that were collapsed earlier (classic mode or
+    -- a previous session) the moment the option is on.
+    if optParkOnCollapse then
+        for key, collapsed in pairs(collapsedGroups) do
+            if collapsed then
+                parkedGroups[key] = true
+            end
+        end
+    end
+
+    -- Tab strip counts (all results, before search/trinket filters)
+    local resultCount, parkedCount = 0, 0
+    for _, group in ipairs(groups) do
+        local key = group.foldKey or group.resultID or group.leader
+        if parkedGroups[key] then
+            parkedCount = parkedCount + 1
+        else
+            resultCount = resultCount + 1
+        end
+    end
+    UpdateTabStrip(resultCount, parkedCount)
+
     local perRow = 5
     local buttonWidth = 125
     local buttonHeight = 22
@@ -1112,38 +1605,121 @@ function RefreshWindow()
     local spacingY = 4
     local startX = 8
 
-    -- Apply filters first so row indices stay contiguous
+    -- Decide which groups the ACTIVE tab lists. Parked groups live only on
+    -- the second tab; every other group only on the first. Filters apply to
+    -- whichever tab is open, so row indices stay contiguous.
     local shown = {}
     for _, group in ipairs(groups) do
-        if GroupMatchesFilters(group) then
+        local key = group.foldKey or group.resultID or group.leader
+        local isParked = parkedGroups[key] and true or false
+        local onActiveTab = false
+        if activeTab == "watch" then
+            onActiveTab = isParked
+        else
+            onActiveTab = not isParked
+        end
+        if onActiveTab and GroupMatchesFilters(group) then
+            group.groupKey = key
+            group.isParked = isParked
             shown[#shown + 1] = group
         end
     end
 
+    -- Hint for the (empty) watch tab
+    if activeTab == "watch" and #shown == 0 then
+        emptyHint:SetText(
+            "No groups on the Watch tab yet.\n\n" ..
+            "With \"Park collapsed groups on the second tab\" enabled (Options button, top right of this strip),\n" ..
+            "collapsing ANY group on the Results tab moves it here instead. While a group is here you can\n" ..
+            "collapse or expand it freely. To send one back, press the ^ arrow next to its [+] marker\n" ..
+            "(or use \"Move all parked groups back\" in the options menu).")
+        emptyHint:Show()
+    else
+        emptyHint:Hide()
+    end
+
     for rowIndex, group in ipairs(shown) do
         local row = AcquireRow(rowIndex)
-        row.groupKey = group.foldKey or group.resultID or group.leader
+        row.groupKey = group.groupKey
         row.leaderName = group.leader
+        row.entryType = group.isParked and "parked" or "main"
         row.isCollapsed = collapsedGroups[row.groupKey] or false
 
+        local desc = group.description or ""
+        local note = optQuickNote and (groupNotes[row.groupKey] or "") or ""
         local foldMarker = row.isCollapsed and "+" or "-"
+
+        -- Parked rows make room for the return-arrow button at the left edge
+        -- (\"near the plus\"); the header click area follows the text.
+        row.returnButton:SetShown(group.isParked)
+        row.text:ClearAllPoints()
+        row.text:SetPoint("TOPLEFT", row, "TOPLEFT", group.isParked and 32 or 8, -8)
+        row.headerButton:SetWidth(group.isParked and 340 or 300)
         row.text:SetText(string.format("[%s] %s (%d)", foldMarker, group.leader, group.members))
         row.activity:SetText(group.listed ~= "" and ("- " .. group.listed) or "")
 
         -- Top block = leader line beside the (possibly wrapped) activity.
         local topH = math.max(row.text:GetStringHeight() or 0, row.activity:GetStringHeight() or 0, 18)
 
+        -- Y position of the line right under the leader/activity block.
+        local line2Top = -(8 + topH + 2)
+
         if row.isCollapsed then
-            -- Folded group: keep only the leader/activity header visible.
-            row.desc:Hide()
+            -- Collapsed group: only the header, plus (optionally) the leader
+            -- description and the always-visible note on a shared second line.
             ReleaseExtraButtons(row, 0)
-            row:SetHeight(8 + topH + 8)
+
+            local showDescLine = (optCollapsedDesc and desc ~= "")
+            row.desc:SetWordWrap(false)
+
+            -- Note first so the description can size itself next to it.
+            if optQuickNote then
+                local noteLabel = note ~= "" and note or "Add note..."
+                row.noteButton:Show()
+                ClipText(row.noteButton.text, noteLabel, 380)
+                row.noteButton:SetWidth((row.noteButton.text:GetStringWidth() or 0) + 8)
+                row.noteButton:ClearAllPoints()
+                row.noteButton:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, line2Top)
+                if note == "" then
+                    row.noteButton.text:SetTextColor(0.5, 0.5, 0.5)
+                else
+                    row.noteButton.text:SetTextColor(1, 1, 1)
+                end
+            else
+                row.noteButton:Hide()
+            end
+
+            if showDescLine then
+                row.desc:Show()
+                row.desc:ClearAllPoints()
+                row.desc:SetPoint("TOPLEFT", row, "TOPLEFT", 8, line2Top)
+                local descMaxW
+                if optQuickNote then
+                    row.desc:SetPoint("RIGHT", row.noteButton, "LEFT", -8)
+                    descMaxW = 680 - 8 - 8 - (row.noteButton:GetWidth() + 8)
+                else
+                    row.desc:SetPoint("RIGHT", row, "RIGHT", -8)
+                    descMaxW = 680 - 16
+                end
+                row.desc:SetTextColor(0.62, 0.62, 0.62)
+                ClipText(row.desc, desc, descMaxW)
+            else
+                row.desc:Hide()
+            end
+
+            -- Second line present only when something is drawn on it.
+            if showDescLine or optQuickNote then
+                row:SetHeight(8 + topH + 2 + 16 + 8)
+            else
+                row:SetHeight(8 + topH + 8)
+            end
         else
             -- Expanded group: show description/comment and all player buttons.
             row.desc:Show()
+            row.desc:SetWordWrap(true)
+            row.desc:SetTextColor(0.75, 0.75, 0.75)
 
             -- Description / comment (display only)
-            local desc = group.description or ""
             row.desc:SetText(desc)
 
             local players = group.players or {}
@@ -1151,7 +1727,7 @@ function RefreshWindow()
             -- Re-anchor the description below whichever is taller (leader line
             -- or the wrapped activity list) so they never overlap.
             row.desc:ClearAllPoints()
-            row.desc:SetPoint("TOPLEFT", row, "TOPLEFT", 8, -(8 + topH + 2))
+            row.desc:SetPoint("TOPLEFT", row, "TOPLEFT", 8, line2Top)
             row.desc:SetPoint("RIGHT", row, "RIGHT", -8, 0)
 
             local descH = 0
@@ -1159,7 +1735,28 @@ function RefreshWindow()
                 descH = (row.desc:GetStringHeight() or 12) + 4
             end
 
-            local headerOffset = 8 + topH + descH + 8
+            -- Note line (only while the notes option is on): a slim, dim,
+            -- right-aligned row under the description. Click it to add/edit.
+            local noteH = 0
+            if optQuickNote then
+                row.noteButton:Show()
+                if note == "" then
+                    row.noteButton.text:SetText("Add a note...")
+                    row.noteButton.text:SetTextColor(0.45, 0.45, 0.45)
+                else
+                    row.noteButton.text:SetText(note)
+                    row.noteButton.text:SetTextColor(1, 1, 1)
+                end
+                ClipText(row.noteButton.text, row.noteButton.text:GetText(), 500)
+                row.noteButton:SetWidth((row.noteButton.text:GetStringWidth() or 0) + 8)
+                row.noteButton:ClearAllPoints()
+                row.noteButton:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, line2Top - descH - 4)
+                noteH = 20
+            else
+                row.noteButton:Hide()
+            end
+
+            local headerOffset = 8 + topH + 2 + descH + noteH + 8
             local startY = -headerOffset
 
             local currentRow = 0
@@ -1281,7 +1878,12 @@ function RefreshWindow()
     for i = 1, activeRowCount do
         totalHeight = totalHeight + rows[i]:GetHeight() + 8
     end
-    content:SetHeight(totalHeight + 20)
+    if emptyHint:IsShown() then
+        -- make room for the multi-line hint on the empty watch tab
+        content:SetHeight(140)
+    else
+        content:SetHeight(totalHeight + 20)
+    end
 
     -- Nudge the template so the scrollbar range recalculates from the
     -- new content height (otherwise the wheel can clamp too early).
@@ -1466,4 +2068,4 @@ addon:SetScript("OnEvent", function(self, event, ...)
     end
 end)
 
-print("|cff00ff00LFGcopy v6.2 loaded. Use /lfgcopy or Alt+I|r")
+print("|cff00ff00LFGcopy v6.3 loaded. Use /lfgcopy or Alt+I|r")
