@@ -476,56 +476,98 @@ UpdatePlaceholder(searchBox)
 -------------------------------------------------
 -- Single-line text helpers
 -------------------------------------------------
--- Truncate a UTF-8 string to maxChars code points (safe: never splits a
--- multi-byte character, and 1-byte continuation bytes don't count).
-local function TruncateCodepoints(s, maxChars)
-    local n = 0
-    for i = 1, #s do
-        local b = s:byte(i)
-        if b < 128 or b >= 192 then   -- start of a code point
-            n = n + 1
-            if n > maxChars then
-                return s:sub(1, i - 1)
-            end
+-- Reusable, unanchored font strings used purely for measuring text. Font
+-- strings that are anchored/layouted can report misleading widths, and
+-- reusing one measurer per font keeps SetText churn off the visible frames.
+local measureCache = {}
+local function GetMeasureFs(fs)
+    local fontObj = fs:GetFontObject()
+    local tmp = measureCache[fontObj]
+    if not tmp then
+        tmp = frame:CreateFontString(nil, "ARTWORK")
+        if fontObj then
+            tmp:SetFontObject(fontObj)
         end
+        measureCache[fontObj] = tmp
     end
-    return s
+    return tmp
 end
 
--- Clip a string so it fits a font string's single line at maxW pixels,
--- appending "..." whenever anything had to be cut. Measures with the font
--- string itself, so it is exact regardless of the font in use.
+-- Clip a string so it fits a single line at maxW pixels, appending "..."
+-- whenever anything had to be cut. Sizes the text by counting code points
+-- (never splits a multi-byte UTF-8 character), measures on a private font
+-- string, and binary-searches the longest prefix that still fits, so it can
+-- never loop forever or cut the text down to nothing.
 local function ClipText(fs, s, maxW)
     if not s or s == "" then
         fs:SetText("")
         return
     end
-    fs:SetText(s)
-    if fs:GetStringWidth() <= maxW then return end
-
-    -- Reserve room for the ellipsis, then shrink (fast chunk pass, then a
-    -- slow one-char pass) until the text + "..." fits.
-    fs:SetText("...")
-    local dotW = fs:GetStringWidth()
-    local limit = maxW - dotW
-    if limit < 10 then limit = 10 end
-
-    local t = s
-    for i = 1, 8 do
-        fs:SetText(t)
-        local w = fs:GetStringWidth()
-        if w <= limit then break end
-        local cut = math.max(1, math.floor((w - limit) / 8))
-        t = TruncateCodepoints(t, math.max(1, #t - cut))
+    if not maxW or maxW <= 0 then
+        fs:SetText(s)
+        return
     end
-    if fs:GetStringWidth() > limit then
-        while #t > 0 do
-            fs:SetText(t)
-            if fs:GetStringWidth() <= limit then break end
-            t = TruncateCodepoints(t, #t - 1)
+
+    local tmp = GetMeasureFs(fs)
+    tmp:SetText(s)
+    if (tmp:GetStringWidth() or 0) <= maxW then
+        fs:SetText(s)   -- fits as-is
+        return
+    end
+
+    -- Byte offsets where each code point starts, so prefixes always cut at
+    -- character boundaries.
+    local starts = {}
+    for i = 1, #s do
+        local b = s:byte(i)
+        if b < 128 or b >= 192 then   -- start of a code point
+            starts[#starts + 1] = i
         end
     end
-    fs:SetText(t .. "...")
+    local function Prefix(n)
+        if n <= 0 then return "" end
+        local stop = starts[n + 1]
+        return s:sub(1, (stop and (stop - 1)) or #s)
+    end
+
+    tmp:SetText("...")
+    local dotW = tmp:GetStringWidth() or 12
+
+    -- Longest prefix whose text + "..." still fits.
+    local lo, hi = 1, #starts
+    local best = 0
+    while lo <= hi do
+        local mid = math.floor((lo + hi) / 2)
+        tmp:SetText(Prefix(mid))
+        if ((tmp:GetStringWidth() or 0) + dotW) <= maxW then
+            best = mid
+            lo = mid + 1
+        else
+            hi = mid - 1
+        end
+    end
+
+    if best == 0 then best = 1 end   -- never collapse down to just "..."
+
+    -- Exact fit check (ellipsis kerning can push the total a pixel or two
+    -- over the prefix-only estimate).
+    while best > 1 do
+        tmp:SetText(Prefix(best) .. "...")
+        if (tmp:GetStringWidth() or 0) <= maxW then break end
+        best = best - 1
+    end
+
+    if best == 1 then
+        -- Keep at least one real character before the ellipsis unless the
+        -- line is so narrow that even "x..." cannot fit.
+        tmp:SetText(Prefix(1) .. "...")
+        if (tmp:GetStringWidth() or 0) > maxW then
+            fs:SetText("...")
+            return
+        end
+    end
+
+    fs:SetText(Prefix(best) .. "...")
 end
 
 -------------------------------------------------
@@ -621,7 +663,13 @@ local function ShowOptionsMenu(anchor)
     -- Modern menu API
     if MenuUtil and MenuUtil.CreateContextMenu then
         MenuUtil.CreateContextMenu(anchor, function(owner, root)
-            root:CreateTitle("LFGcopy options")
+            -- Only root:CreateButton is guaranteed across clients -- the
+            -- TBC Anniversary backport of the menu framework has no
+            -- CreateSeparator (calling it errors out), and even the title
+            -- is optional, so every extra call is guarded.
+            if root.CreateTitle then
+                root:CreateTitle("LFGcopy options")
+            end
             local function item(text, checked, onClick)
                 local mark = checked and "[x]" or "[ ]"
                 root:CreateButton(mark .. " " .. text, onClick)
@@ -635,7 +683,6 @@ local function ShowOptionsMenu(anchor)
             item("Show the second tab", optSecondTab,
                 function() ApplyOption("secondTab", not optSecondTab) if RefreshWindow then RefreshWindow() end end)
             if next(parkedGroups) then
-                root:CreateSeparator()
                 root:CreateButton("Move all parked groups back", MoveAllParkedBack)
             end
         end)
@@ -990,15 +1037,20 @@ local function AcquireRow(index)
 
     -- Return-arrow button: the ONLY control that moves a parked group back
     -- to the first tab. It sits just left of the fold marker ("near the
-    -- plus"), and is shown only on parked rows (second tab).
-    row.returnButton = CreateFrame("Button", nil, row)
-    row.returnButton:SetSize(16, 16)
-    row.returnButton:SetPoint("LEFT", row, "LEFT", 9, 0)
+    -- plus"), and is shown only on parked rows (second tab). A full-size
+    -- button look with a padded click area -- a tiny 16px target was too
+    -- easy to miss.
+    row.returnButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.returnButton:SetSize(24, 20)
+    row.returnButton:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -5)
     row.returnButton:RegisterForClicks("LeftButtonUp")
-    row.returnButton.text = row.returnButton:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    row.returnButton.text:SetPoint("CENTER", row.returnButton, "CENTER", 0, 1)
-    row.returnButton.text:SetText("^")
-    row.returnButton.text:SetTextColor(0.9, 0.82, 0.4)
+    if row.returnButton.SetHitRectInsets then
+        pcall(function()
+            row.returnButton:SetHitRectInsets(-4, -4, -4, -3)
+        end)
+    end
+    row.returnButton:SetText("^")
+    row.returnButton:GetFontString():SetTextColor(0.9, 0.82, 0.4)
     row.returnButton:SetScript("OnClick", function(self)
         local parent = self:GetParent()
         if parent and parent.groupKey then
@@ -1008,15 +1060,14 @@ local function AcquireRow(index)
         end
     end)
     row.returnButton:SetScript("OnEnter", function(self)
-        local parent = self:GetParent()
-        self.text:SetTextColor(1, 1, 1)
+        self:GetFontString():SetTextColor(1, 1, 1)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine("Move this group back to the first tab (expanded)", 1, 1, 1)
         GameTooltip:AddLine("Only this button moves it back -- expanding does not", 0.7, 0.7, 0.7)
         GameTooltip:Show()
     end)
     row.returnButton:SetScript("OnLeave", function(self)
-        self.text:SetTextColor(0.9, 0.82, 0.4)
+        self:GetFontString():SetTextColor(0.9, 0.82, 0.4)
         GameTooltip:Hide()
     end)
     row.returnButton:Hide()
@@ -1650,11 +1701,14 @@ function RefreshWindow()
         local foldMarker = row.isCollapsed and "+" or "-"
 
         -- Parked rows make room for the return-arrow button at the left edge
-        -- (\"near the plus\"); the header click area follows the text.
+        -- ("near the plus"); the header click area follows the text so the
+        -- button never covers it.
         row.returnButton:SetShown(group.isParked)
         row.text:ClearAllPoints()
-        row.text:SetPoint("TOPLEFT", row, "TOPLEFT", group.isParked and 32 or 8, -8)
-        row.headerButton:SetWidth(group.isParked and 340 or 300)
+        row.text:SetPoint("TOPLEFT", row, "TOPLEFT", group.isParked and 36 or 8, -8)
+        row.headerButton:ClearAllPoints()
+        row.headerButton:SetPoint("TOPLEFT", row, "TOPLEFT", group.isParked and 36 or 4, -4)
+        row.headerButton:SetWidth(group.isParked and 310 or 300)
         row.text:SetText(string.format("[%s] %s (%d)", foldMarker, group.leader, group.members))
         row.activity:SetText(group.listed ~= "" and ("- " .. group.listed) or "")
 
@@ -2068,4 +2122,4 @@ addon:SetScript("OnEvent", function(self, event, ...)
     end
 end)
 
-print("|cff00ff00LFGcopy v6.3 loaded. Use /lfgcopy or Alt+I|r")
+print("|cff00ff00LFGcopy v6.3.1 loaded. Use /lfgcopy or Alt+I|r")

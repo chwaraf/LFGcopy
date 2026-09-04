@@ -2,7 +2,7 @@
 ## Title: LFGcopy
 ## Notes: Copy LFG names/links, class colors, abbreviated dungeon/raid tags, smarter roles, watch tab
 ## Author: ChatGPT
-## Version: 6.3
+## Version: 6.3.1
 ## SavedVariables: LFGcopyDB
 
 LFGcopy.lua
