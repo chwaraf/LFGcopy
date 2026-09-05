@@ -834,8 +834,8 @@ end
 -- Scroll
 -------------------------------------------------
 local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
--- Tab strip takes up room below the title bar.
-scroll:SetPoint("TOPLEFT", 10, -(30 + TAB_BAR_H + 2))
+-- Leave a little breathing room between the tab divider and the first group.
+scroll:SetPoint("TOPLEFT", 10, -(30 + TAB_BAR_H + 10))
 scroll:SetPoint("BOTTOMRIGHT", -30, 10)
 
 local content = CreateFrame("Frame", nil, scroll)
