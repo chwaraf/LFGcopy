@@ -40,10 +40,10 @@ Each LFG result is shown as a grouped row with a compact header and optional exp
 
 The tab strip under the title bar has two tabs: **Primo** and **Secundo**.
 
-With the option **"Park collapsed groups on the second tab"** enabled, collapsing any group on the Primo tab moves it to the Secundo tab instead of folding it in place:
+With the option **"Park collapsed groups on the second tab"** enabled (the default), collapsing any group on the Primo tab moves it to the Secundo tab instead of folding it in place:
 
 - A parked group is shown only on the Secundo tab (with its leader comment and note if enabled).
-- Collapsed descriptions are shortened to one line; expand the group to read the full description.
+- Collapsed groups show the full description, wrapping onto as many lines as needed without adding an ellipsis. Expanding also reveals the player list.
 - You can expand/collapse it there freely — expanding it does NOT move it back.
 - The only way to move it back is the small **^ arrow button** just left of its [+]/[-] marker. The group returns to the Primo tab expanded.
 - The Secundo tab button shows how many groups are parked, e.g. "Secundo (2)".
@@ -51,7 +51,7 @@ With the option **"Park collapsed groups on the second tab"** enabled, collapsin
 
 ### Notes per group
 
-With **"Show group notes"** enabled, every row shows a note area (on collapsed rows it shares the second line with the leader comment, right-aligned; on expanded rows it is a slim line under the comment). Click it to add or edit the note in a small popup:
+With **"Show group notes"** enabled, every row shows a note area (on collapsed rows it sits to the right of the wrapped leader comment; on expanded rows it is a slim line under the comment). Click it to add or edit the note in a small popup:
 
 - The note stays visible even when the group is collapsed.
 - Notes follow the group across tabs and across collapse/expand cycles (session-only, keyed by group leader).
@@ -70,7 +70,8 @@ The addon has a "Trinket: ON/OFF" toggle that highlights groups containing a mag
 2. Make sure the folder is named exactly:
    - Interface/AddOns/LFGcopy
 3. Reload your UI or restart the game.
-4. Open the addon with:
+4. After installing this update, `/reload` should announce **LFGcopy v6.3.2** in chat. If it still says v6.3.1, the older files are installed.
+5. Open the addon with:
    - /lfgcopy
    - or use the default keybind Alt+I
 
@@ -96,10 +97,10 @@ The addon has a "Trinket: ON/OFF" toggle that highlights groups containing a mag
 
 ## Options
 
-Settings are saved in the LFGcopyDB SavedVariables file. Open the menu via the "Options" button on the tab strip (or right-click either tab):
+Settings are saved in the LFGcopyDB SavedVariables file. Existing saved choices are preserved when defaults change. Open the menu via the "Options" button on the tab strip (or right-click either tab):
 
-- **Park collapsed groups on the second tab** (default off) — collapsing a group moves it to the Secundo tab; see "Secundo tab" above.
-- **Show descriptions on collapsed groups** (default on) — the leader's comment is shown on the collapsed row (single line, dimmed).
+- **Park collapsed groups on the second tab** (default on) — collapsing a group moves it to the Secundo tab; see "Secundo tab" above.
+- **Show descriptions on collapsed groups** (default on) — the full leader comment is shown on the collapsed row (wrapped and dimmed).
 - **Show group notes** (default off) — enables the per-group note area described above.
 - **Show the second tab** (default on) — hides the Secundo tab and sends any parked groups back to the Primo tab.
 
@@ -120,7 +121,7 @@ The addon is mostly ready to use out of the box. If you want to change the trink
 
 ## Development checks
 
-Run `lua tests/ui_regressions.lua` from the repository root (Lua 5.1 or later). The tests use mocked WoW widgets to check protected-description handling, collapse/expand transitions, notes, and tab labels. Actual text rendering still needs an in-game check.
+Run `lua tests/ui_regressions.lua` from the repository root (Lua 5.1 or later). The tests use mocked WoW widgets to check explicit description sizing (including stale heights on reused rows), full wrapped descriptions and row heights, collapse/expand transitions, notes, tab labels, and saved option defaults. Actual text rendering still needs an in-game check.
 
 ## Author
 

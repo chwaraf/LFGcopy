@@ -335,10 +335,10 @@ end
 --    disappears entirely: after the header click the group is parked and is
 --    only visible on the second tab. Expanding a parked group never sends it
 --    back -- the arrow button next to the (+) marker is the only way back.
-local optParkOnCollapse = Opt("parkOnCollapse", false)
+local optParkOnCollapse = Opt("parkOnCollapse", true)
 
--- 2) Show the group's leader description/comment even when collapsed (a dim
---    line under the leader row on the first tab).
+-- 2) Show the full leader description/comment even when collapsed (dimmed
+--    and wrapped below the leader row on either tab).
 local optCollapsedDesc = Opt("showCollapsedDescription", true)
 
 -- 3) Quick note per group. The note is always visible on the collapsed row
@@ -569,6 +569,34 @@ local function ClipText(fs, s, maxW)
     end
 
     fs:SetText(Prefix(best) .. "...")
+end
+
+-------------------------------------------------
+-- Full description layout
+-------------------------------------------------
+-- Blizzard comments can be display handles such as |Kk303|k: never split or
+-- rewrite them. Anchor-only widths and a recycled FontString's old height can
+-- make the client measure an already-truncated line. Give it an explicit width
+-- and clear the height BEFORE SetText, then allocate the full wrapped height.
+local function LayoutDescription(row, text, top, width)
+    local fs = row.desc
+    fs:ClearAllPoints()
+    fs:SetPoint("TOPLEFT", row, "TOPLEFT", 8, top)
+    fs:SetWidth(math.max(width, 1))
+    fs:SetHeight(0) -- reset to automatic height on every use of a pooled row
+    fs:SetWordWrap(true)
+    fs:SetNonSpaceWrap(true)
+    fs:SetMaxLines(0)
+    fs:SetText(text)
+
+    if text == "" then return 0 end
+
+    -- With an explicit width and automatic height, GetHeight includes wrapping.
+    -- Also consider GetStringHeight for clients that report it differently.
+    -- Round up and leave a small margin for font/UI-scale rounding.
+    local height = math.ceil(math.max(fs:GetHeight() or 0, fs:GetStringHeight() or 0)) + 4
+    fs:SetHeight(height)
+    return height
 end
 
 -------------------------------------------------
@@ -1074,7 +1102,7 @@ local function AcquireRow(index)
     row.returnButton:Hide()
 
     -- Note line (clickable). Shown when the notes option is on: on collapsed
-    -- rows it shares the description line (right side), on expanded rows it
+    -- rows it sits beside the wrapped description, on expanded rows it
     -- is a slim line under the description. Clicking it opens the note popup.
     row.noteButton = CreateFrame("Button", nil, row)
     row.noteButton:SetHeight(14)
@@ -1117,8 +1145,7 @@ local function AcquireRow(index)
     -- (The comment is Blizzard's protected secret string; it renders as
     -- readable text but cannot be copied out programmatically.)
     row.desc = row:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-    row.desc:SetPoint("TOPLEFT", row.text, "BOTTOMLEFT", 0, -2)
-    row.desc:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+    -- LayoutDescription sets a single anchor and explicit dimensions per refresh.
     row.desc:SetJustifyH("LEFT")
     row.desc:SetJustifyV("TOP")
     row.desc:SetTextColor(0.75, 0.75, 0.75)
@@ -1628,9 +1655,9 @@ function RefreshWindow()
     local groups = BuildGroups()
 
     -- With "park on collapse" on, EVERY collapsed group belongs on the second
-    -- tab. This migrates groups that were collapsed earlier (classic mode or
-    -- a previous session) the moment the option is on.
-    if optParkOnCollapse then
+    -- tab while that tab is enabled. Never send groups to a hidden tab.
+    -- This also migrates groups collapsed before parking was enabled.
+    if optParkOnCollapse and optSecondTab then
         for key, collapsed in pairs(collapsedGroups) do
             if collapsed then
                 parkedGroups[key] = true
@@ -1720,14 +1747,11 @@ function RefreshWindow()
         local line2Top = -(8 + topH + 2)
 
         if row.isCollapsed then
-            -- Collapsed group: only the header, plus (optionally) the leader
-            -- description and the always-visible note on a shared second line.
+            -- Collapsed group: header, optional full description, and a note
+            -- beside it. The row grows to fit every line of the description.
             ReleaseExtraButtons(row, 0)
 
             local showDescLine = (optCollapsedDesc and desc ~= "")
-            row.desc:SetWordWrap(false)
-            row.desc:SetNonSpaceWrap(false)
-            row.desc:SetMaxLines(1)
 
             -- Note first so the description can size itself next to it.
             if optQuickNote then
@@ -1746,53 +1770,38 @@ function RefreshWindow()
                 row.noteButton:Hide()
             end
 
+            local descH = 0
             if showDescLine then
                 row.desc:Show()
-                row.desc:ClearAllPoints()
-                row.desc:SetPoint("TOPLEFT", row, "TOPLEFT", 8, line2Top)
-                if optQuickNote then
-                    row.desc:SetPoint("RIGHT", row.noteButton, "LEFT", -8)
-                else
-                    row.desc:SetPoint("RIGHT", row, "RIGHT", -8)
-                end
                 row.desc:SetTextColor(0.62, 0.62, 0.62)
-                -- Comments can be protected display handles such as |Kk303|k.
-                -- Cutting the string breaks the handle and exposes its code.
-                -- Pass it through intact; the anchored, single-line FontString
-                -- truncates the rendered text safely, including beside a note.
-                row.desc:SetText(desc)
+                local descWidth = row:GetWidth() - 16
+                if optQuickNote then
+                    descWidth = descWidth - row.noteButton:GetWidth() - 8
+                end
+                descH = LayoutDescription(row, desc, line2Top, descWidth)
             else
                 row.desc:Hide()
             end
 
-            -- Second line present only when something is drawn on it.
+            -- Use the allocated text-box height, including rounding padding.
+            -- Leave room for the note/short comments and keep later rows below it.
             if showDescLine or optQuickNote then
-                row:SetHeight(8 + topH + 2 + 16 + 8)
+                row:SetHeight(8 + topH + 2 + math.max(descH, 16) + 8)
             else
                 row:SetHeight(8 + topH + 8)
             end
         else
             -- Expanded group: show description/comment and all player buttons.
             row.desc:Show()
-            row.desc:SetWordWrap(true)
-            row.desc:SetNonSpaceWrap(true)
-            row.desc:SetMaxLines(0) -- pooled rows must show all lines again
             row.desc:SetTextColor(0.75, 0.75, 0.75)
-
-            -- Description / comment (display only)
-            row.desc:SetText(desc)
 
             local players = group.players or {}
 
             -- Re-anchor the description below whichever is taller (leader line
             -- or the wrapped activity list) so they never overlap.
-            row.desc:ClearAllPoints()
-            row.desc:SetPoint("TOPLEFT", row, "TOPLEFT", 8, line2Top)
-            row.desc:SetPoint("RIGHT", row, "RIGHT", -8, 0)
-
-            local descH = 0
-            if desc ~= "" then
-                descH = (row.desc:GetStringHeight() or 12) + 4
+            local descH = LayoutDescription(row, desc, line2Top, row:GetWidth() - 16)
+            if descH > 0 then
+                descH = descH + 4
             end
 
             -- Note line (only while the notes option is on): a slim, dim,
@@ -2128,4 +2137,4 @@ addon:SetScript("OnEvent", function(self, event, ...)
     end
 end)
 
-print("|cff00ff00LFGcopy v6.3.1 loaded. Use /lfgcopy or Alt+I|r")
+print("|cff00ff00LFGcopy v6.3.2 loaded. Use /lfgcopy or Alt+I|r")
