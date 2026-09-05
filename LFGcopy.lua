@@ -345,7 +345,7 @@ local optCollapsedDesc = Opt("showCollapsedDescription", true)
 --    (right of the description area) and as a slim line on expanded rows.
 local optQuickNote = Opt("quickNote", false)
 
--- Show the parked groups tab bar. Turning it off also empties the watch tab
+-- Show the parked groups tab bar. Turning it off also empties the Secundo tab
 -- (every parked group goes back to the first tab, expanded).
 local optSecondTab = Opt("secondTab", true)
 
@@ -358,13 +358,13 @@ local activeTab = "results"
 -- after pressing Blizzard's "Search Again" button, which can assign new resultIDs.
 local collapsedGroups = {}
 
--- Groups parked on the SECOND tab ("Watch"). A group lands here by collapsing
+-- Groups parked on the SECOND tab ("Secundo"). A group lands here by collapsing
 -- it while the "park on collapse" option is on. While parked, the group is
 -- NOT shown on the first tab and stays on the second tab no matter what --
 -- expanding or collapsing it there only acts on the parked copy. The way back
 -- to the first tab is the return-arrow button next to the fold marker on the
 -- parked row ("Move all parked groups back" in the options menu does the same
--- for every parked group at once; the menu toggle that hides the watch tab
+-- for every parked group at once; the menu toggle that hides the Secundo tab
 -- also sends everything back). Like collapsedGroups, entries are keyed by
 -- group key (leader name, see below), not resultID, so parked groups stay
 -- parked across "Search Again".
@@ -493,6 +493,7 @@ local function GetMeasureFs(fs)
     return tmp
 end
 
+-- For user-entered notes only, never Blizzard-provided descriptions.
 -- Clip a string so it fits a single line at maxW pixels, appending "..."
 -- whenever anything had to be cut. Sizes the text by counting code points
 -- (never splits a multi-byte UTF-8 character), measures on a private font
@@ -638,7 +639,7 @@ local function ApplyOption(key, value)
     elseif key == "secondTab" then
         optSecondTab = value
         if not value then
-            -- Watch tab disabled: every parked group goes home (expanded).
+            -- Secundo tab disabled: every parked group goes home (expanded).
             for k in pairs(parkedGroups) do
                 parkedGroups[k] = nil
                 collapsedGroups[k] = false
@@ -719,9 +720,9 @@ local function ShowOptionsMenu(anchor)
 end
 
 -------------------------------------------------
--- Tab strip ("Results" / "Watch") under the title bar
+-- Tab strip ("Primo" / "Secundo") under the title bar
 -------------------------------------------------
--- The second tab ("Watch") holds parked groups. Left-click a tab to switch,
+-- The second tab ("Secundo") holds parked groups. Left-click a tab to switch,
 -- right-click the strip (or click "Options") for the options menu above.
 local TAB_BAR_H = 22
 
@@ -765,7 +766,7 @@ local function MakeTabButton(name, text)
     btn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         if self.tab == "watch" then
-            GameTooltip:AddLine("Second tab: groups you park (collapsed) here", 1, 1, 1)
+            GameTooltip:AddLine("Secundo: groups you park (collapsed) here", 1, 1, 1)
             GameTooltip:AddLine("Left-click: switch tab", 0.7, 0.7, 0.7)
             GameTooltip:AddLine("Right-click: options", 0.7, 0.7, 0.7)
         else
@@ -778,10 +779,10 @@ local function MakeTabButton(name, text)
     return btn
 end
 
-local tabResults = MakeTabButton("results", "Results")
+local tabResults = MakeTabButton("results", "Primo")
 tabResults:SetPoint("LEFT", tabStrip, "LEFT", 2, 0)
 
-local tabWatch = MakeTabButton("watch", "Watch")
+local tabWatch = MakeTabButton("watch", "Secundo")
 tabWatch:SetPoint("LEFT", tabResults, "RIGHT", 18, 0)
 
 local optionsButton = CreateFrame("Button", nil, tabStrip)
@@ -807,7 +808,7 @@ optionsButton:SetScript("OnLeave", function(self)
 end)
 
 -- Paints the two tabs after every refresh: label (with live counts), active
--- color/underline, and hides the watch tab while the option is off.
+-- color/underline, and hides the Secundo tab while the option is off.
 local function UpdateTabStrip(resultCount, parkedCount)
     local function paint(btn, active, text)
         btn.label:SetText(text)
@@ -820,10 +821,10 @@ local function UpdateTabStrip(resultCount, parkedCount)
         end
     end
 
-    paint(tabResults, activeTab == "results", string.format("Results (%d)", resultCount))
+    paint(tabResults, activeTab == "results", string.format("Primo (%d)", resultCount))
     if optSecondTab then
         tabWatch:Show()
-        local watchLabel = parkedCount > 0 and string.format("Watch (%d)", parkedCount) or "Watch"
+        local watchLabel = parkedCount > 0 and string.format("Secundo (%d)", parkedCount) or "Secundo"
         paint(tabWatch, activeTab == "watch", watchLabel)
     else
         tabWatch:Hide()
@@ -842,7 +843,7 @@ local content = CreateFrame("Frame", nil, scroll)
 content:SetSize(700, 1)
 scroll:SetScrollChild(content)
 
--- Friendly hint shown when the second (Watch) tab is empty.
+-- Friendly hint shown when the second (Secundo) tab is empty.
 local emptyHint = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 emptyHint:SetPoint("TOPLEFT", content, "TOPLEFT", 14, -14)
 emptyHint:SetWidth(660)
@@ -998,7 +999,7 @@ local function AcquireRow(index)
         elseif collapsedGroups[key] then
             -- Collapsed row on the first tab: expand it. (With "park on
             -- collapse" on, collapsed first-tab rows are normally migrated
-            -- to the watch tab right away; this path covers the classic
+            -- to the Secundo tab right away; this path covers the classic
             -- mode and any leftovers from an older session.)
             collapsedGroups[key] = false
         elseif optParkOnCollapse and optSecondTab then
@@ -1018,14 +1019,14 @@ local function AcquireRow(index)
         if parent then
             if parent.entryType == "parked" then
                 if parent.isCollapsed then
-                    GameTooltip:AddLine("Left-click: expand this group on the second tab", 1, 1, 1)
+                    GameTooltip:AddLine("Left-click: expand this group on Secundo", 1, 1, 1)
                 else
-                    GameTooltip:AddLine("Left-click: collapse this group (it stays on the second tab)", 1, 1, 1)
+                    GameTooltip:AddLine("Left-click: collapse this group (it stays on Secundo)", 1, 1, 1)
                 end
             elseif parent.isCollapsed then
                 GameTooltip:AddLine("Left-click: expand this group", 1, 1, 1)
             elseif optParkOnCollapse and optSecondTab then
-                GameTooltip:AddLine("Left-click: send this group to the second tab", 1, 1, 1)
+                GameTooltip:AddLine("Left-click: send this group to Secundo", 1, 1, 1)
             else
                 GameTooltip:AddLine("Left-click: collapse this group", 1, 1, 1)
             end
@@ -1062,7 +1063,7 @@ local function AcquireRow(index)
     row.returnButton:SetScript("OnEnter", function(self)
         self:GetFontString():SetTextColor(1, 1, 1)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Move this group back to the first tab (expanded)", 1, 1, 1)
+        GameTooltip:AddLine("Move this group back to Primo (expanded)", 1, 1, 1)
         GameTooltip:AddLine("Only this button moves it back -- expanding does not", 0.7, 0.7, 0.7)
         GameTooltip:Show()
     end)
@@ -1676,12 +1677,12 @@ function RefreshWindow()
         end
     end
 
-    -- Hint for the (empty) watch tab
+    -- Hint for the (empty) Secundo tab
     if activeTab == "watch" and #shown == 0 then
         emptyHint:SetText(
-            "No groups on the Watch tab yet.\n\n" ..
+            "No groups on the Secundo tab yet.\n\n" ..
             "With \"Park collapsed groups on the second tab\" enabled (Options button, top right of this strip),\n" ..
-            "collapsing ANY group on the Results tab moves it here instead. While a group is here you can\n" ..
+            "collapsing ANY group on the Primo tab moves it here instead. While a group is here you can\n" ..
             "collapse or expand it freely. To send one back, press the ^ arrow next to its [+] marker\n" ..
             "(or use \"Move all parked groups back\" in the options menu).")
         emptyHint:Show()
@@ -1725,6 +1726,8 @@ function RefreshWindow()
 
             local showDescLine = (optCollapsedDesc and desc ~= "")
             row.desc:SetWordWrap(false)
+            row.desc:SetNonSpaceWrap(false)
+            row.desc:SetMaxLines(1)
 
             -- Note first so the description can size itself next to it.
             if optQuickNote then
@@ -1747,16 +1750,17 @@ function RefreshWindow()
                 row.desc:Show()
                 row.desc:ClearAllPoints()
                 row.desc:SetPoint("TOPLEFT", row, "TOPLEFT", 8, line2Top)
-                local descMaxW
                 if optQuickNote then
                     row.desc:SetPoint("RIGHT", row.noteButton, "LEFT", -8)
-                    descMaxW = 680 - 8 - 8 - (row.noteButton:GetWidth() + 8)
                 else
                     row.desc:SetPoint("RIGHT", row, "RIGHT", -8)
-                    descMaxW = 680 - 16
                 end
                 row.desc:SetTextColor(0.62, 0.62, 0.62)
-                ClipText(row.desc, desc, descMaxW)
+                -- Comments can be protected display handles such as |Kk303|k.
+                -- Cutting the string breaks the handle and exposes its code.
+                -- Pass it through intact; the anchored, single-line FontString
+                -- truncates the rendered text safely, including beside a note.
+                row.desc:SetText(desc)
             else
                 row.desc:Hide()
             end
@@ -1771,6 +1775,8 @@ function RefreshWindow()
             -- Expanded group: show description/comment and all player buttons.
             row.desc:Show()
             row.desc:SetWordWrap(true)
+            row.desc:SetNonSpaceWrap(true)
+            row.desc:SetMaxLines(0) -- pooled rows must show all lines again
             row.desc:SetTextColor(0.75, 0.75, 0.75)
 
             -- Description / comment (display only)
@@ -1933,7 +1939,7 @@ function RefreshWindow()
         totalHeight = totalHeight + rows[i]:GetHeight() + 8
     end
     if emptyHint:IsShown() then
-        -- make room for the multi-line hint on the empty watch tab
+        -- make room for the multi-line hint on the empty Secundo tab
         content:SetHeight(140)
     else
         content:SetHeight(totalHeight + 20)

@@ -1,6 +1,6 @@
 ## Interface: 20505
 ## Title: LFGcopy
-## Notes: Copy LFG names/links, class colors, abbreviated dungeon/raid tags, smarter roles, watch tab
+## Notes: Copy LFG names/links, class colors, abbreviated dungeon/raid tags, smarter roles, Primo/Secundo tabs
 ## Author: ChatGPT
 ## Version: 6.3.1
 ## SavedVariables: LFGcopyDB
