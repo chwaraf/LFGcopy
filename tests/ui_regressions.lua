@@ -104,7 +104,6 @@ local env = setmetatable({
     parkedGroups = {},
     collapsedGroups = {},
     activeTab = "results",
-    optSecondTab = true,
     optCollapsedDesc = true,
     optQuickNote = false,
     optParkOnCollapse = true,
@@ -284,12 +283,13 @@ Equal(env.tabResults.label:GetText(), "Primo (17)", "Primo multiple-group count"
 Equal(env.tabWatch.label:GetText(), "Secundo (3)", "Secundo multiple-group count")
 Equal(env.tabWatch.activeBar:IsShown(), true, "active Secundo underline")
 Equal(env.tabResults.activeBar:IsShown(), false, "inactive Primo underline")
-env.optSecondTab = false
+env.tabWatch:Hide()
 UpdateTabStrip(17, 0)
-Equal(env.tabWatch:IsShown(), false, "hide Secundo option")
+Equal(env.tabWatch:IsShown(), true, "Secundo is always visible, even when empty")
+assert(not source:find("optSecondTab", 1, true), "no conditional second-tab visibility remains")
+assert(not source:find("Show the second tab", 1, true), "the removed toggle must not appear in either menu")
 
 -- Tall adjacent rows contribute their entire heights to the scroll content.
-env.optSecondTab = true
 env.optQuickNote = false
 env.optParkOnCollapse = true
 env.parkedGroups = {}
@@ -304,33 +304,22 @@ CheckDescriptionFits(env.rows[1])
 CheckDescriptionFits(env.rows[2])
 Equal(env.content:GetHeight(), env.rows[1]:GetHeight() + env.rows[2]:GetHeight() + 36, "scroll height includes both full descriptions")
 
--- The new default must never park collapsed groups on an inaccessible tab.
+-- With parking enabled, both live collapsed groups move off Primo and stay
+-- accessible on the permanently enabled Secundo tab.
 env.activeTab = "results"
-env.optSecondTab = false
 env.parkedGroups = {}
 RefreshWindow()
-Equal(env.activeRowCount, 2, "collapsed groups remain visible when Secundo is hidden")
-Equal(next(env.parkedGroups), nil, "no groups parked on a hidden tab")
+Equal(env.activeRowCount, 0, "collapsed groups leave Primo when parking is enabled")
+Equal(env.tabWatch:IsShown(), true, "Secundo remains accessible")
+env.activeTab = "watch"
+RefreshWindow()
+Equal(env.activeRowCount, 2, "parked groups are available on Secundo")
 CheckDescriptionFits(env.rows[1])
 
--- Execute the actual option initialization: default on, but never overwrite
--- an existing saved choice (including a deliberate false value).
-local optionsCode = assert(source:match("\nlocal db =.-\nlocal optParkOnCollapse = [^\n]+"))
-    .. "\nreturn optParkOnCollapse, db"
-local default, defaultDB = LoadInEnvironment(optionsCode, setmetatable({}, { __index = _G }))()
-Equal(default, true, "parking is enabled by default")
-Equal(defaultDB.parkOnCollapse, true, "new parking default is stored")
-for _, saved in ipairs({ false, true }) do
-    local savedDB = { parkOnCollapse = saved }
-    local optionEnv = setmetatable({ LFGcopyDB = savedDB }, { __index = _G })
-    local actual, actualDB = LoadInEnvironment(optionsCode, optionEnv)()
-    Equal(actual, saved, "existing saved parking choice is respected")
-    Equal(actualDB, savedDB, "existing options table is preserved")
-end
-
+-- Saved-variable initialization/defaults are covered by persistence_regressions.lua.
 local tocFile = assert(io.open("LFGcopy.toc", "r"))
 local version = assert(tocFile:read("*a"):match("## Version: ([^\n]+)"))
 tocFile:close()
 assert(source:find("LFGcopy v" .. version .. " loaded.", 1, true), "startup message must identify the installed addon version")
 
-print("PASS: " .. cases .. " full-description/tab/note combinations, explicit sizing, stale-height resets, transitions, labels, defaults, and version")
+print("PASS: " .. cases .. " full-description/tab/note combinations, explicit sizing, stale-height resets, transitions, permanent tabs, and version")

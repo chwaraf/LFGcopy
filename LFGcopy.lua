@@ -1,3 +1,4 @@
+local ADDON_NAME = (...) or "LFGcopy"
 local addon = CreateFrame("Frame")
 
 -- Keybinding names shown in WoW's Key Bindings UI when Bindings.xml is loaded.
@@ -279,9 +280,16 @@ StaticPopupDialogs["LFG_STANDALONE_COPY"] = {
     OnShow = function(self, data)
         local editBox = self.EditBox or self.editBox
         if editBox then
-            editBox:SetText(data or "")
-            editBox:HighlightText()
+            -- StaticPopup edit boxes are pooled. A previous note/other dialog
+            -- may have left a 60-character or byte limit on this same box.
+            -- Reset limits BEFORE assigning the URL, not after it was cut.
+            editBox:SetMaxLetters(0)
+            if editBox.SetMaxBytes then editBox:SetMaxBytes(0) end
+            local text = type(data) == "string" and data
+                or (type(self.data) == "string" and self.data) or ""
+            editBox:SetText(text)
             editBox:SetFocus()
+            editBox:HighlightText(0)
 
             -- Some WoW clients/templates route Escape through the edit box script.
             editBox:SetScript("OnEscapePressed", CloseCopyPopup)
@@ -320,10 +328,9 @@ local RefreshWindow
 -------------------------------------------------
 -- Options
 -------------------------------------------------
--- Optionally persisted to SavedVariables (LFGcopyDB, declared in the .toc):
--- defaults stay live while the addon runs, and the DB only overrides when a
--- key already exists, so adding a new option never wipes old settings.
-local db = (type(LFGcopyDB) == "table") and LFGcopyDB or {}
+-- Controls initially use defaults. SavedVariables are bound after WoW has
+-- loaded them, in our ADDON_LOADED handler, not while this file is executing.
+local db = {}
 local function Opt(key, default)
     if db[key] == nil then
         db[key] = default
@@ -335,45 +342,94 @@ end
 --    disappears entirely: after the header click the group is parked and is
 --    only visible on the second tab. Expanding a parked group never sends it
 --    back -- the arrow button next to the (+) marker is the only way back.
-local optParkOnCollapse = Opt("parkOnCollapse", true)
+local optParkOnCollapse = true
 
 -- 2) Show the full leader description/comment even when collapsed (dimmed
 --    and wrapped below the leader row on either tab).
-local optCollapsedDesc = Opt("showCollapsedDescription", true)
+local optCollapsedDesc = true
 
 -- 3) Quick note per group. The note is always visible on the collapsed row
 --    (right of the description area) and as a slim line on expanded rows.
-local optQuickNote = Opt("quickNote", false)
+local optQuickNote = false
 
--- Show the parked groups tab bar. Turning it off also empties the Secundo tab
--- (every parked group goes back to the first tab, expanded).
-local optSecondTab = Opt("secondTab", true)
+-------------------------------------------------
+-- Per-character saved notes and group/tab state
+-------------------------------------------------
+-- Only metadata is saved, never live listings or Blizzard's temporary comment
+-- display handles. Restored state is attached to matching leaders in fresh
+-- search results; expired/offline listings are not displayed as live groups.
+local charDB = {}
 
--- Which tab is shown. "results" = the normal first tab, "watch" = the second
--- tab that parked groups live on.
+local function IsSavedGroupKey(key)
+    return type(key) == "string" and key:sub(1, 7) == "leader:" and #key > 7
+end
+
+local function RestoreGroupTable(field, valueType)
+    local values = charDB[field]
+    if type(values) ~= "table" then
+        values = {}
+        charDB[field] = values
+    end
+    for key, value in pairs(values) do
+        if not IsSavedGroupKey(key) or type(value) ~= valueType then
+            values[key] = nil
+        end
+    end
+    return values
+end
+
+-- Use a realm-qualified leader identity, never a recyclable search result ID.
+local function GetLeaderGroupKey(name)
+    if type(name) ~= "string" or name == "" or name:find("|K", 1, true) then return nil end
+    if not name:find("-", 1, true) then
+        local realm = (GetNormalizedRealmName and GetNormalizedRealmName())
+            or (GetRealmName and GetRealmName()) or ""
+        if realm == "" then return nil end
+        name = name .. "-" .. realm
+    end
+    return "leader:" .. name:gsub("%s+", ""):lower()
+end
+
+-- Internal tab IDs remain stable across the Primo/Secundo display-name change.
 local activeTab = "results"
+local function SetActiveTab(tab)
+    if tab ~= "results" and tab ~= "watch" then return end
+    activeTab = tab
+    charDB.activeTab = tab
+end
 
--- Collapsed/expanded state per group. Clicking the leader name toggles this.
--- Keyed mostly by leader name instead of resultID so folded groups stay folded
--- after pressing Blizzard's "Search Again" button, which can assign new resultIDs.
 local collapsedGroups = {}
-
--- Groups parked on the SECOND tab ("Secundo"). A group lands here by collapsing
--- it while the "park on collapse" option is on. While parked, the group is
--- NOT shown on the first tab and stays on the second tab no matter what --
--- expanding or collapsing it there only acts on the parked copy. The way back
--- to the first tab is the return-arrow button next to the fold marker on the
--- parked row ("Move all parked groups back" in the options menu does the same
--- for every parked group at once; the menu toggle that hides the Secundo tab
--- also sends everything back). Like collapsedGroups, entries are keyed by
--- group key (leader name, see below), not resultID, so parked groups stay
--- parked across "Search Again".
 local parkedGroups = {}
-
--- Per-group notes entered by the player. Also keyed by group key. A note is
--- attached to the group listing itself (not the fold state), so it is shown
--- whenever the group is visible, on both tabs, collapsed or not.
 local groupNotes = {}
+
+local function InitializeSavedData()
+    -- Rebind all runtime references now that WoW has loaded the saved globals.
+    -- Creating local tables before this event alone would lose restored data.
+    db = (type(LFGcopyDB) == "table") and LFGcopyDB or {}
+    LFGcopyDB = db
+    db.secondTab = nil -- Secundo is permanent, even for an old saved false value
+    optParkOnCollapse = Opt("parkOnCollapse", true)
+    optCollapsedDesc = Opt("showCollapsedDescription", true)
+    optQuickNote = Opt("quickNote", false)
+
+    charDB = (type(LFGcopyCharDB) == "table") and LFGcopyCharDB or {}
+    LFGcopyCharDB = charDB
+    collapsedGroups = RestoreGroupTable("collapsedGroups", "boolean")
+    parkedGroups = RestoreGroupTable("parkedGroups", "boolean")
+    groupNotes = RestoreGroupTable("groupNotes", "string")
+    SetActiveTab(charDB.activeTab == "watch" and "watch" or "results")
+end
+
+-- Unknown leaders can still be handled during this session, but their result
+-- IDs must not be restored for unrelated groups after a reload/relog.
+local function PrepareSavedGroupState()
+    for _, values in ipairs({ collapsedGroups, parkedGroups, groupNotes }) do
+        for key in pairs(values) do
+            if not IsSavedGroupKey(key) then values[key] = nil end
+        end
+    end
+    charDB.activeTab = activeTab
+end
 
 -- "Trinket only" toggle button (vertically centered on the title bar)
 local trinketToggle = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
@@ -602,9 +658,8 @@ end
 -------------------------------------------------
 -- Group note popup
 -------------------------------------------------
--- Notes are per group key and live in groupNotes above. They are NOT saved
--- to disk on purpose: a note keyed by leader name would otherwise stick
--- around forever, so notes live for the session (like collapse state does).
+-- Notes are saved for this character, keyed by the leader's name and realm.
+-- An empty note removes it from saved state as well as from the current row.
 local function TrimNoteText(s)
     s = s or ""
     s = s:gsub("^%s+", ""):gsub("%s+$", "")
@@ -629,14 +684,17 @@ StaticPopupDialogs["LFGCOPY_GROUP_NOTE"] = {
         local editBox = self.EditBox or self.editBox
         if editBox then
             editBox:SetMaxLetters(60)
-            editBox:SetText((data and data.key and groupNotes[data.key]) or "")
-            editBox:HighlightText()
+            if editBox.SetMaxBytes then editBox:SetMaxBytes(0) end
+            data = data or self.data
+            editBox:SetText((type(data) == "table" and data.key and groupNotes[data.key]) or "")
             editBox:SetFocus()
+            editBox:HighlightText(0)
             editBox:SetScript("OnEscapePressed", CloseNotePopup)
         end
     end,
     OnAccept = function(self, data)
-        if not data or not data.key then return end
+        data = data or self.data
+        if type(data) ~= "table" or not data.key then return end
         local editBox = self.EditBox or self.editBox
         local note = TrimNoteText(editBox and editBox:GetText())
         if note == "" then
@@ -664,18 +722,6 @@ local function ApplyOption(key, value)
         optCollapsedDesc = value
     elseif key == "quickNote" then
         optQuickNote = value
-    elseif key == "secondTab" then
-        optSecondTab = value
-        if not value then
-            -- Secundo tab disabled: every parked group goes home (expanded).
-            for k in pairs(parkedGroups) do
-                parkedGroups[k] = nil
-                collapsedGroups[k] = false
-            end
-            if activeTab == "watch" then
-                activeTab = "results"
-            end
-        end
     end
 end
 
@@ -684,7 +730,7 @@ local function MoveAllParkedBack()
         parkedGroups[k] = nil
         collapsedGroups[k] = false   -- they return expanded
     end
-    activeTab = "results"
+    SetActiveTab("results")
     if RefreshWindow then RefreshWindow() end
 end
 
@@ -709,8 +755,6 @@ local function ShowOptionsMenu(anchor)
                 function() ApplyOption("showCollapsedDescription", not optCollapsedDesc) if RefreshWindow then RefreshWindow() end end)
             item("Show group notes", optQuickNote,
                 function() ApplyOption("quickNote", not optQuickNote) if RefreshWindow then RefreshWindow() end end)
-            item("Show the second tab", optSecondTab,
-                function() ApplyOption("secondTab", not optSecondTab) if RefreshWindow then RefreshWindow() end end)
             if next(parkedGroups) then
                 root:CreateButton("Move all parked groups back", MoveAllParkedBack)
             end
@@ -732,10 +776,6 @@ local function ShowOptionsMenu(anchor)
             end },
             { text = "Show group notes", checked = optQuickNote, notCheckable = false, func = function()
                 ApplyOption("quickNote", not optQuickNote)
-                if RefreshWindow then RefreshWindow() end
-            end },
-            { text = "Show the second tab", checked = optSecondTab, notCheckable = false, func = function()
-                ApplyOption("secondTab", not optSecondTab)
                 if RefreshWindow then RefreshWindow() end
             end },
         }
@@ -786,9 +826,8 @@ local function MakeTabButton(name, text)
             return
         end
         local tab = self.tab
-        if tab == "watch" and not optSecondTab then return end
         if activeTab == tab then return end
-        activeTab = tab
+        SetActiveTab(tab)
         if RefreshWindow then RefreshWindow() end
     end)
     btn:SetScript("OnEnter", function(self)
@@ -836,7 +875,7 @@ optionsButton:SetScript("OnLeave", function(self)
 end)
 
 -- Paints the two tabs after every refresh: label (with live counts), active
--- color/underline, and hides the Secundo tab while the option is off.
+-- color/underline. Both Primo and Secundo are always available.
 local function UpdateTabStrip(resultCount, parkedCount)
     local function paint(btn, active, text)
         btn.label:SetText(text)
@@ -850,13 +889,9 @@ local function UpdateTabStrip(resultCount, parkedCount)
     end
 
     paint(tabResults, activeTab == "results", string.format("Primo (%d)", resultCount))
-    if optSecondTab then
-        tabWatch:Show()
-        local watchLabel = parkedCount > 0 and string.format("Secundo (%d)", parkedCount) or "Secundo"
-        paint(tabWatch, activeTab == "watch", watchLabel)
-    else
-        tabWatch:Hide()
-    end
+    tabWatch:Show()
+    local watchLabel = parkedCount > 0 and string.format("Secundo (%d)", parkedCount) or "Secundo"
+    paint(tabWatch, activeTab == "watch", watchLabel)
 end
 
 -------------------------------------------------
@@ -1030,7 +1065,7 @@ local function AcquireRow(index)
             -- to the Secundo tab right away; this path covers the classic
             -- mode and any leftovers from an older session.)
             collapsedGroups[key] = false
-        elseif optParkOnCollapse and optSecondTab then
+        elseif optParkOnCollapse then
             -- First tab + "park on collapse": collapsing IS the send-to-
             -- second-tab gesture, so the group leaves this tab entirely.
             collapsedGroups[key] = true
@@ -1053,7 +1088,7 @@ local function AcquireRow(index)
                 end
             elseif parent.isCollapsed then
                 GameTooltip:AddLine("Left-click: expand this group", 1, 1, 1)
-            elseif optParkOnCollapse and optSecondTab then
+            elseif optParkOnCollapse then
                 GameTooltip:AddLine("Left-click: send this group to Secundo", 1, 1, 1)
             else
                 GameTooltip:AddLine("Left-click: collapse this group", 1, 1, 1)
@@ -1127,6 +1162,7 @@ local function AcquireRow(index)
             GameTooltip:AddLine("Left-click: add a note to this group", 1, 1, 1)
             GameTooltip:AddLine("The note stays visible even when the group is collapsed", 0.7, 0.7, 0.7)
         end
+        GameTooltip:AddLine("Notes are saved for this character across reloads and relogs", 0.7, 0.7, 0.7)
         GameTooltip:Show()
     end)
     row.noteButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1566,9 +1602,9 @@ local function BuildGroups()
                 end
             end
 
-            -- Stable key for collapse state. LFG resultID can change after "Search Again",
-            -- but the same group leader normally stays the same.
-            local foldKey = (leaderName ~= "Unknown" and NormalizeName(leaderName)) or tostring(resultID)
+            -- Match saved notes/placement even when the result ID changes.
+            -- The fallback is deliberately session-only until the leader is known.
+            local foldKey = GetLeaderGroupKey(leader and leader.name) or ("result:" .. tostring(resultID))
 
             table.insert(groups, {
                 resultID = resultID,
@@ -1654,10 +1690,9 @@ function RefreshWindow()
     end
     local groups = BuildGroups()
 
-    -- With "park on collapse" on, EVERY collapsed group belongs on the second
-    -- tab while that tab is enabled. Never send groups to a hidden tab.
-    -- This also migrates groups collapsed before parking was enabled.
-    if optParkOnCollapse and optSecondTab then
+    -- With "park on collapse" on, EVERY collapsed group belongs on Secundo.
+    -- This also migrates restored groups collapsed before parking was enabled.
+    if optParkOnCollapse then
         for key, collapsed in pairs(collapsedGroups) do
             if collapsed then
                 parkedGroups[key] = true
@@ -1707,11 +1742,11 @@ function RefreshWindow()
     -- Hint for the (empty) Secundo tab
     if activeTab == "watch" and #shown == 0 then
         emptyHint:SetText(
-            "No groups on the Secundo tab yet.\n\n" ..
-            "With \"Park collapsed groups on the second tab\" enabled (Options button, top right of this strip),\n" ..
-            "collapsing ANY group on the Primo tab moves it here instead. While a group is here you can\n" ..
-            "collapse or expand it freely. To send one back, press the ^ arrow next to its [+] marker\n" ..
-            "(or use \"Move all parked groups back\" in the options menu).")
+            "No matching groups on Secundo right now.\n\n" ..
+            "Notes and tab placement are saved for this character. Groups return here when their\n" ..
+            "leaders appear in your current LFG search results.\n\n" ..
+            "With \"Park collapsed groups on the second tab\" enabled, collapsing a group on Primo sends it here.\n" ..
+            "Expand/collapse freely here; use the ^ arrow to move a group back to Primo.")
         emptyHint:Show()
     else
         emptyHint:Hide()
@@ -2115,18 +2150,29 @@ end
 -------------------------------------------------
 -- Events
 -------------------------------------------------
+addon:RegisterEvent("ADDON_LOADED")
 addon:RegisterEvent("PLAYER_LOGIN")
+addon:RegisterEvent("PLAYER_LOGOUT")
 addon:RegisterEvent("LFG_LIST_SEARCH_RESULTS_RECEIVED")
 addon:RegisterEvent("LFG_LIST_SEARCH_RESULT_UPDATED")
 
 addon:SetScript("OnEvent", function(self, event, ...)
-    if event == "PLAYER_LOGIN" then
+    if event == "ADDON_LOADED" then
+        local loadedAddon = ...
+        if loadedAddon == ADDON_NAME then
+            InitializeSavedData()
+            self:UnregisterEvent("ADDON_LOADED")
+        end
+    elseif event == "PLAYER_LOGIN" then
         -- Delay slightly so WoW's binding system and any existing saved bindings are fully loaded.
         if C_Timer and C_Timer.After then
             C_Timer.After(1, EnsureDefaultKeybind)
         else
             EnsureDefaultKeybind()
         end
+    elseif event == "PLAYER_LOGOUT" then
+        -- WoW saves both SavedVariables tables after this event (also on /reload).
+        PrepareSavedGroupState()
     elseif event == "LFG_LIST_SEARCH_RESULTS_RECEIVED" then
         -- New batch of results: ask the server for every group's roster
         RequestAllMemberInfo()
@@ -2137,4 +2183,4 @@ addon:SetScript("OnEvent", function(self, event, ...)
     end
 end)
 
-print("|cff00ff00LFGcopy v6.3.2 loaded. Use /lfgcopy or Alt+I|r")
+print("|cff00ff00LFGcopy v6.4.0 loaded. Use /lfgcopy or Alt+I|r")
