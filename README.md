@@ -9,7 +9,7 @@ LFGcopy is a World of Warcraft addon that gives you a cleaner, more useful view 
   - leader name
   - member count
   - abbreviated dungeon/raid activity names
-  - the leader’s comment/description
+  - the leader's comment/description
   - player names with class colors and role icons
 - Lets you collapse or expand groups by clicking the leader line.
 - Provides quick actions for players:
@@ -19,7 +19,10 @@ LFGcopy is a World of Warcraft addon that gives you a cleaner, more useful view 
   - shift + right-click: open a small context menu with more options
 - Includes filters for:
   - search text
-  - “trinket only” mode for groups that contain a marked mage
+  - "trinket only" mode for groups that contain a marked mage
+- Always includes a second "Secundo" tab for groups you park (see Options below).
+- Adds optional per-group notes that stay visible even when a group is collapsed.
+- Remembers notes, parked/collapsed groups, and the selected tab across reloads and relogs for each character.
 - Supports a default keybind and slash commands.
 
 ## Features in more detail
@@ -34,13 +37,51 @@ Each LFG result is shown as a grouped row with a compact header and optional exp
 - Kara for Karazhan
 - BT for Black Temple
 
+### Secundo tab (second tab) and parked groups
+
+The tab strip under the title bar always has two tabs: **Primo** and **Secundo**. Secundo cannot be hidden.
+
+With the option **"Park collapsed groups on the second tab"** enabled (the default), collapsing any group on the Primo tab moves it to the Secundo tab instead of folding it in place:
+
+- A parked group is shown only on the Secundo tab (with its leader comment and note if enabled).
+- Collapsed groups show the full description, wrapping onto as many lines as needed without adding an ellipsis. Expanding also reveals the player list.
+- You can expand/collapse it there freely — expanding it does NOT move it back.
+- The only way to move it back is the small **^ arrow button** just left of its [+]/[-] marker. The group returns to the Primo tab expanded.
+- The Secundo tab button shows how many groups are parked, e.g. "Secundo (2)".
+- Right-clicking a tab (or clicking the "Options" button) also offers "Move all parked groups back".
+
+### Notes per group
+
+With **"Show group notes"** enabled, every row shows a note area (on collapsed rows it sits to the right of the wrapped leader comment; on expanded rows it is a slim line under the comment). Click it to add or edit the note in a small popup:
+
+- The note stays visible even when the group is collapsed.
+- Notes follow the group across tabs, collapse/expand cycles, reloads, and relogs.
+- Clear the note and press Save to delete it from saved data.
+
+### What survives a reload or relog?
+
+For each character, `LFGcopyCharDB` remembers:
+
+- your own group notes;
+- which leaders' groups belong on Primo or Secundo;
+- collapsed/expanded state;
+- the last selected tab.
+
+State is matched by the leader's name **and realm**, not by temporary LFG result IDs. It is applied when that leader appears in fresh search results; it can also follow a later listing from the same leader. Groups that are no longer listed are not shown as live groups. Entries without an identifiable leader are session-only.
+
+On **World of Warcraft: Forever**, which is realmless, state is matched by the leader's two-part name alone (Forever names are already unique per region, so no realm is appended). See the Forever section below for other Forever-specific adaptations.
+
+Group leaders' **live comments/descriptions are not archived**. WoW can supply these as temporary protected display codes that cannot reliably be reused after a reload. The addon displays the current description supplied by WoW when the listing becomes available again.
+
+WoW writes this data on normal reload/logout. Notes from older, session-only versions cannot be recovered after they were lost. Options remain account-wide in `LFGcopyDB`; group state is separate for each character.
+
 ### Role handling
 
 Player role icons are shown based on the role data returned by the game API. The addon tries to infer the most useful role for display and will prefer the role information that makes the most sense for the listing type.
 
 ### Trinket filter
 
-The addon has a “Trinket: ON/OFF” toggle that highlights groups containing a mage who is marked as owning a trinket. It looks for a global table of mage names from another addon’s saved data, with a built-in fallback list.
+The addon has a "Trinket: ON/OFF" toggle that highlights groups containing a mage who is marked as owning a trinket. It looks for a global table of mage names from another addon's saved data, with a built-in fallback list.
 
 ## Supported game versions
 
@@ -118,6 +159,10 @@ and whether the secret-value system described below is active).
 - **Class colors** prefer the modern `C_ClassColor.GetClassColor()` API when
   available (Forever/Retail) and fall back to the classic
   `RAID_CLASS_COLORS`/`CUSTOM_CLASS_COLORS` table otherwise.
+- **Persisted notes/parked groups** (Secundo tab) key off the leader's name
+  without trying to append a realm on Forever, since Forever's two-part
+  names are already unique per region. This also avoids feeding a possibly
+  "secret" raw name straight into the key-building/SavedVariables code.
 
 ### What's still a best guess
 
@@ -162,7 +207,8 @@ Arriving Dec 9, 2026 (five weeks after launch):
 2. Make sure the folder is named exactly:
    - Interface/AddOns/LFGcopy
 3. Reload your UI or restart the game.
-4. Open the addon with:
+4. After installing this update, `/reload` should announce **LFGcopy v6.4.1** in chat. An older version number means older files are installed.
+5. Open the addon with:
    - /lfgcopy
    - or use the default keybind Alt+I
 
@@ -176,12 +222,24 @@ Arriving Dec 9, 2026 (five weeks after launch):
 
 ### Controls
 
-- Click the leader name to collapse or expand a group.
+- Click the leader name to collapse, expand, or (optionally) park a group.
+- Click the ^ arrow to move a parked group back from the Secundo tab.
+- Click the note text on a row to add/edit that group's note.
 - Right-click the leader name to whisper the leader.
 - Click a player name to copy it.
 - Shift-click a player name to copy a WarcraftLogs link.
 - Use the search box to filter results by leader, activity, description, or member name.
 - Use the trinket toggle to show only groups with a marked mage.
+- Click the Primo/Secundo tabs to switch between the two lists.
+- Click "Options" (or right-click a tab) to open the addon options menu.
+
+## Options
+
+Settings are saved in the LFGcopyDB SavedVariables file. Existing saved choices are preserved when defaults change. Open the menu via the "Options" button on the tab strip (or right-click either tab):
+
+- **Park collapsed groups on the second tab** (default on) — collapsing a group moves it to the Secundo tab; see "Secundo tab" above.
+- **Show descriptions on collapsed groups** (default on) — the full leader comment is shown on the collapsed row (wrapped and dimmed).
+- **Show group notes** (default off) — enables the per-group note area described above.
 
 ## Configuration
 
@@ -195,9 +253,22 @@ The addon is mostly ready to use out of the box. If you want to change the trink
 
 ## Notes
 
-- The addon uses Blizzard’s LFG List API and will only work in a client/session where those APIs are available.
+- The addon uses Blizzard's LFG List API and will only work in a client/session where those APIs are available.
 - The addon requests fuller member information for search results so that more players show up correctly.
 - Some Blizzard-provided strings such as comments are displayed as text but may not be programmatically copyable.
+- Options persist through `LFGcopyDB`; your notes and group/tab state persist per character through `LFGcopyCharDB`.
+
+## Development checks
+
+From the repository root with Lua 5.1 or later, run:
+
+```sh
+lua tests/ui_regressions.lua
+lua tests/persistence_regressions.lua
+lua tests/copy_popup_regressions.lua
+```
+
+The tests use mocked WoW APIs/widgets to check full description sizing, reused rows, permanent tabs, saved defaults, reload/relog state, and full-length copying after a note popup reuses the same edit box. Actual rendering and disk saving still need an in-game check.
 
 ## Author
 

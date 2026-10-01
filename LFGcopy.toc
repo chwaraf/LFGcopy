@@ -1,7 +1,9 @@
 ## Interface: 20505, 16001, 16002, 16003, 16004, 16005, 16006, 16007, 16008, 16009, 16010
 ## Title: LFGcopy
-## Notes: Copy LFG names/links, class colors, abbreviated dungeon/raid tags, smarter roles. Supports Burning Crusade Classic and World of Warcraft: Forever.
+## Notes: Copy LFG names/links, class colors, abbreviated dungeon/raid tags, smarter roles, Primo/Secundo tabs. Supports Burning Crusade Classic and World of Warcraft: Forever.
 ## Author: ChatGPT
-## Version: 6.3
+## Version: 6.4.1
+## SavedVariables: LFGcopyDB
+## SavedVariablesPerCharacter: LFGcopyCharDB
 
 LFGcopy.lua
