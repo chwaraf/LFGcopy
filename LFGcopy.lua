@@ -19,6 +19,112 @@ end
 
 local CLASS_COLORS = CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS
 
+-- Prefer the modern C_ClassColor API when it exists (present on Forever's
+-- Mainline API surface, and on Retail/Anniversary) and fall back to the
+-- plain CLASS_COLORS table lookup everywhere else (Classic/BC Classic).
+-- Both return a {r,g,b,...} color object/table, so callers don't need to
+-- care which path was used.
+local function GetClassColor(classFilename)
+    if not classFilename then return nil end
+    if C_ClassColor and C_ClassColor.GetClassColor then
+        local c = C_ClassColor.GetClassColor(classFilename)
+        if c then return c end
+    end
+    return CLASS_COLORS[classFilename]
+end
+
+-------------------------------------------------
+-- World of Warcraft: Forever compatibility layer
+-------------------------------------------------
+-- World of Warcraft: Forever is Blizzard's realmless, permanent level-60
+-- "Classic+" game line (beta started Sept 17 2026, launching Nov 4 2026).
+-- It matters to LFGcopy for three unrelated reasons:
+--
+-- 1. Client/API identification is backwards. Forever runs the modern
+--    "Mainline" addon API (same family as Retail: MenuUtil, C_LFGList with
+--    the newer multi-activityIDs shape, etc.) and reports
+--    WOW_PROJECT_ID == WOW_PROJECT_MAINLINE, exactly like real Retail.
+--    BUT its TOC "## Interface" number is vanilla-shaped and LOW (16001 as
+--    of beta build 1.60.1; it's generated as major*10000+minor*100+patch,
+--    so it ticks up slightly with every point release -- 16002 for 1.60.2,
+--    and so on). That means neither "WOW_PROJECT_ID == MAINLINE" nor
+--    "interface number is small" alone tells you anything (Classic Era/
+--    SoD/Anniversary also have a small interface number, just under a
+--    different project id; real Retail has WOW_PROJECT_MAINLINE too, just
+--    with a much bigger interface number). The PAIR is what's unique to
+--    Forever, so that's what IsForeverClient() below checks.
+--
+-- 2. Two-part, realmless character names. Forever has no realms, so every
+--    character is identified by a two-word "First Last" display name
+--    (Blizzard's own example: "Ana Forever") instead of the familiar
+--    single name or "Name-Realm" pair. There's no hyphen to strip, so
+--    Ambiguate() already leaves these names alone -- but anything that
+--    builds a raw "/w NAME " chat line breaks, because the chat parser
+--    reads only the first space-separated word as the whisper target and
+--    treats the rest as the message. See OpenWhisper() below. The
+--    WarcraftLogs link builder also needs to percent-encode the space.
+--
+-- 3. "Secret values". Forever shares Mainline/Midnight's anti-bot "secret
+--    value" system (https://warcraft.wiki.gg/wiki/Secret_values). Under
+--    certain client-side restrictions (new/low-level accounts, a chat-
+--    messaging lockdown, etc.) strings and booleans handed back by
+--    C_LFGList can arrive as opaque "secret" values. Reading them is fine,
+--    but lower()/gsub()/find()/concatenation/equality-branching on one
+--    throws a taint error -- and this addon does exactly that kind of bulk
+--    string work on every name, comment, and activity title it sees. Every
+--    raw value pulled out of the LFG List API is therefore passed through
+--    SafeString()/SafeFlag() the moment it leaves the API, before anything
+--    else touches it. This is harmless (a no-op) on clients that don't
+--    have the secret-value system at all, like BC Classic.
+local WOW_PROJECT_MAINLINE_SAFE = WOW_PROJECT_MAINLINE or 1
+
+local function IsForeverClient()
+    if not WOW_PROJECT_ID or WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE_SAFE then
+        return false
+    end
+    local interfaceVersion = select(4, GetBuildInfo())
+    -- Real Retail is comfortably above 50000 (110000+ as of 2026); Forever
+    -- is still vanilla-versioned (16001-ish). Anything Mainline-flagged but
+    -- below that line is Forever.
+    return (interfaceVersion or 0) > 0 and interfaceVersion < 50000
+end
+
+-- Cached once: the game version can't change mid-session.
+local IS_FOREVER = IsForeverClient()
+
+-- issecretvalue()/issecrettable() only exist on clients that have the
+-- secret-value system (Forever and other modern Mainline builds). Wrap
+-- them so calling code never has to guard the guard.
+local function IsSecretValue(v)
+    if v == nil or type(issecretvalue) ~= "function" then return false end
+    local ok, result = pcall(issecretvalue, v)
+    return ok and result == true
+end
+
+local function IsSecretTable(t)
+    if type(t) ~= "table" or type(issecrettable) ~= "function" then return false end
+    local ok, result = pcall(issecrettable, t)
+    return ok and result == true
+end
+
+-- Returns a plain, safe-to-touch string: `v` itself if it's an ordinary,
+-- non-secret string, or `fallback` for nil/secret/any other type. Call this
+-- on every raw string the moment it comes out of a Blizzard API, before any
+-- lower()/gsub()/find()/concatenation is attempted on it.
+local function SafeString(v, fallback)
+    fallback = fallback or ""
+    if type(v) ~= "string" then return fallback end
+    if IsSecretValue(v) then return fallback end
+    return v
+end
+
+-- Returns a plain, safe-to-branch-on value, treating a secret value as
+-- "unknown" (false) instead of letting a comparison on it error out.
+local function SafeFlag(v)
+    if IsSecretValue(v) then return false end
+    return v
+end
+
 -------------------------------------------------
 -- Trinket owners (read from another addon's saved data)
 -------------------------------------------------
@@ -37,8 +143,14 @@ local TRINKET_FALLBACK = {
 local trinketOwners = {}
 
 local function NormalizeName(name)
+    name = SafeString(name, nil)          -- bail out cleanly on nil/secret values
     if not name then return nil end
-    name = Ambiguate(name, "none")        -- strip realm if present
+    name = Ambiguate(name, "none")        -- strip realm if present (no-op on Forever's realmless names)
+    -- NOTE: this intentionally strips ALL whitespace, including the space
+    -- inside a Forever "First Last" name, so trinket-owner lookups keep
+    -- matching regardless of whether the other addon's list stored the
+    -- name with or without a space. Don't reuse this for anything that
+    -- needs to preserve the original display name.
     name = name:gsub("%s+", "")           -- drop stray spaces
     return name:lower()
 end
@@ -96,6 +208,21 @@ end
 -- or "www" (retail). No game API tells us which, so set it here.
 local WCL_SUBDOMAIN = "fresh"
 
+-- WarcraftLogs has no confirmed subdomain/URL shape for World of Warcraft:
+-- Forever yet -- it's a brand-new client still in beta as of this writing,
+-- and WCL hasn't published parsing/URL support for it. Forever's dungeons
+-- and raids are still "Classic-style" vanilla encounters under the hood, so
+-- this guesses the Classic Era subdomain as the closest existing match.
+-- Change this (or WCL_SUBDOMAIN above) the moment WarcraftLogs documents
+-- Forever's real URL shape.
+local WCL_FOREVER_SUBDOMAIN = "classic"
+
+-- Realm segment to use in the URL when running on Forever and the client
+-- doesn't hand back a usable realm name (Forever is realmless, so there's
+-- no guarantee GetNormalizedRealmName()/GetRealmName() return anything
+-- meaningful). Adjust this once WCL's real Forever URL shape is known.
+local WCL_FOREVER_REALM_FALLBACK = "forever"
+
 local function Slugify(realm)
     if not realm or realm == "" then return "" end
     realm = realm:gsub("'", "")        -- drop apostrophes (e.g. Mal'Ganis)
@@ -104,11 +231,31 @@ local function Slugify(realm)
     return realm:lower()
 end
 
+-- Percent-encodes anything a URL path segment can't contain safely,
+-- most importantly the space in Forever's two-part "First Last" names
+-- (e.g. "Ana Forever" -> "Ana%20Forever"). Letters, digits, '-', '.', '_'
+-- and '~' are left alone; everything else (spaces, apostrophes, non-ASCII
+-- letters, etc.) is escaped.
+local function UrlEncode(str)
+    if not str or str == "" then return "" end
+    return (str:gsub("([^%w%-%.%_%~])", function(c)
+        return string.format("%%%02X", string.byte(c))
+    end))
+end
+
+local foreverWclWarned = false
 local function GetWCLLink(playerName)
+    if IS_FOREVER and not foreverWclWarned then
+        foreverWclWarned = true
+        print("|cffff8800[LFGcopy]|r WarcraftLogs support for WoW Forever isn't confirmed yet -- "
+            .. "the copied link is a best guess. Edit WCL_FOREVER_SUBDOMAIN / WCL_FOREVER_REALM_FALLBACK "
+            .. "near the top of LFGcopy.lua once WarcraftLogs documents Forever's real URL shape.")
+    end
+
     -- Region: prefer the string API, fall back to numeric id mapping
     local region
     if GetCurrentRegionName then
-        region = GetCurrentRegionName()
+        region = SafeString(GetCurrentRegionName(), nil)
     end
     if not region and GetCurrentRegion then
         local map = { [1] = "US", [2] = "KR", [3] = "EU", [4] = "TW", [5] = "CN" }
@@ -116,18 +263,26 @@ local function GetWCLLink(playerName)
     end
     region = (region or "us"):lower()
 
-    -- Realm: the player's own realm (single-realm server = everyone shares it)
-    local realm = (GetNormalizedRealmName and GetNormalizedRealmName())
-        or (GetRealmName and GetRealmName())
+    -- Realm: the player's own realm (single-realm server = everyone shares it).
+    -- Forever is realmless, so this may come back empty -- fall back to a
+    -- placeholder segment rather than producing a broken double-slash URL.
+    local realm = SafeString(GetNormalizedRealmName and GetNormalizedRealmName(), nil)
+        or SafeString(GetRealmName and GetRealmName(), nil)
         or ""
     local realmSlug = Slugify(realm)
+    if realmSlug == "" and IS_FOREVER then
+        realmSlug = WCL_FOREVER_REALM_FALLBACK
+    end
 
-    -- Player name: strip realm if somehow present, lowercased for the URL
-    local name = Ambiguate(playerName or "", "none")
+    -- Player name: strip realm if somehow present, then percent-encode so a
+    -- Forever "First Last" name (with its space) doesn't break the URL.
+    local name = Ambiguate(SafeString(playerName, ""), "none")
+
+    local subdomain = IS_FOREVER and WCL_FOREVER_SUBDOMAIN or WCL_SUBDOMAIN
 
     return string.format(
         "https://%s.warcraftlogs.com/character/%s/%s/%s",
-        WCL_SUBDOMAIN, region, realmSlug, name
+        subdomain, region, realmSlug, UrlEncode(name)
     )
 end
 
@@ -138,7 +293,10 @@ end
 -- toChat = false -> results show in the default Who window
 -------------------------------------------------
 local function DoWho(name, toChat)
-    local who = Ambiguate(name, "none")
+    local who = Ambiguate(SafeString(name, ""), "none")
+    -- Quoting the name handles Forever's space-containing two-part names
+    -- fine: '/who n-"Ana Forever"' matches the full name as one literal,
+    -- the same way '/who n-"Multi Word Guild"' already works for guilds.
     local filter = 'n-"' .. who .. '"'
 
     if SetWhoToUI then
@@ -161,8 +319,26 @@ local function DoWho(name, toChat)
 end
 
 local function OpenWhisper(name)
-    local who = Ambiguate(name or "", "none")
+    local who = Ambiguate(SafeString(name, ""), "none")
     if who == "" or who == "Unknown" then return end
+
+    -- Forever's realmless "First Last" names contain a space, so just
+    -- typing "/w First Last " into the edit box is unsafe: the chat parser
+    -- reads only the first space-separated word as the whisper target and
+    -- treats everything after it (including the rest of the name) as the
+    -- start of the message. Blizzard's own "send tell" helpers set the
+    -- whisper target as structured data instead of raw text, so prefer
+    -- those whenever they exist -- they've been around well before Forever
+    -- too, so this is strictly safer on every client, not just a Forever-
+    -- only code path.
+    if ChatFrameUtil and ChatFrameUtil.SendTell then
+        ChatFrameUtil.SendTell(who, DEFAULT_CHAT_FRAME)
+        return
+    end
+    if ChatFrame_SendTell then
+        ChatFrame_SendTell(who, DEFAULT_CHAT_FRAME)
+        return
+    end
 
     if ChatFrame_OpenChat then
         ChatFrame_OpenChat("/w " .. who .. " ")
@@ -626,6 +802,14 @@ end
 -- trusting it first was causing DPS to show even for tank/healer-only
 -- applicants whenever it came back populated but stale/wrong.
 local function IsRoleFlagSet(v)
+    -- Under Forever's secret-value system a role flag can come back as a
+    -- secret boolean/number; comparing it directly (v == true) would throw
+    -- a taint error instead of returning false. Treat "secret" the same as
+    -- "unknown" here -- GetPlayers() already falls through to several other
+    -- sources (MemberInfo, MemberCounts, base role string) if this comes
+    -- back empty, so this just means one of those sources has to win
+    -- instead.
+    v = SafeFlag(v)
     -- Treat nil, false, and 0 all as "not set". Lua only treats nil/false as
     -- falsy, so a numeric 0 (which some API variants return instead of a
     -- real boolean) would otherwise be misread as "selected".
@@ -634,6 +818,7 @@ end
 
 local function GetPlayerRoleFlags(player)
     if not player then return {} end
+    if IsSecretTable(player) then return {} end
     local flags = {}
     local hasTank, hasHealer, hasDamage = false, false, false
 
@@ -643,7 +828,7 @@ local function GetPlayerRoleFlags(player)
     if IsRoleFlagSet(player.damage) or IsRoleFlagSet(player.isDamage) or IsRoleFlagSet(player.damager) or IsRoleFlagSet(player.isDamager) or IsRoleFlagSet(player.dps) then hasDamage = true end
     
     -- Check lfgRoles sub-table (used by TBC Anniversary for solo listings)
-    if player.lfgRoles then
+    if player.lfgRoles and not IsSecretTable(player.lfgRoles) then
         if IsRoleFlagSet(player.lfgRoles.tank) then hasTank = true end
         if IsRoleFlagSet(player.lfgRoles.healer) then hasHealer = true end
         if IsRoleFlagSet(player.lfgRoles.dps) or IsRoleFlagSet(player.lfgRoles.damage) then hasDamage = true end
@@ -657,24 +842,31 @@ local function GetPlayerRoleFlags(player)
 end
 
 local function GetPlayerBaseRole(player)
-    if not player then return nil end
-    if type(player.role) == "string" and player.role ~= "" then return player.role end
-    if player.assignedRole and player.assignedRole ~= "" then return player.assignedRole end
+    if not player or IsSecretTable(player) then return nil end
+    local role = SafeString(player.role, nil)
+    if role and role ~= "" then return role end
+    local assignedRole = SafeString(player.assignedRole, nil)
+    if assignedRole and assignedRole ~= "" then return assignedRole end
     return nil
 end
 
 local function GetPlayers(resultID, leaderName)
     local info = C_LFGList.GetSearchResultInfo(resultID)
-    if not info then
+    if not info or IsSecretTable(info) then
         return {}
     end
 
     local players = {}
 
-    for i = 1, (info.numMembers or 0) do
+    for i = 1, (SafeFlag(info.numMembers) or 0) do
         local player = C_LFGList.GetSearchResultPlayerInfo(resultID, i)
-        if player and player.name then
-            local clean = Ambiguate(player.name, "none")
+        if player and not IsSecretTable(player) then
+            -- A secret/missing name (e.g. a new/restricted account under a
+            -- chat-messaging lockdown on Forever) shouldn't drop the whole
+            -- member silently -- fall back to a distinct placeholder so the
+            -- slot, role icon, and member count still render correctly.
+            local rawName = SafeString(player.name, nil) or string.format("Hidden Player %d", i)
+            local clean = Ambiguate(rawName, "none")
             local exists = false
             for _, v in ipairs(players) do
                 if v.name == clean then
@@ -684,15 +876,15 @@ local function GetPlayers(resultID, leaderName)
             end
             if not exists then
                 local finalRoles = {}
-                local isSolo = (info.numMembers or 0) <= 1
+                local isSolo = (SafeFlag(info.numMembers) or 0) <= 1
                 
                 if not isSolo then
                     -- In a group, a player occupies exactly ONE assigned role.
                     -- Prioritize their explicit assigned base role so we don't show all the multi-roles they CAN play.
                     local r = GetPlayerBaseRole(player)
                     if not r and C_LFGList.GetSearchResultMemberInfo then
-                        local memberInfoRole = C_LFGList.GetSearchResultMemberInfo(resultID, i)
-                        if type(memberInfoRole) == "string" and memberInfoRole ~= "" then r = memberInfoRole end
+                        local memberInfoRole = SafeString(C_LFGList.GetSearchResultMemberInfo(resultID, i), nil)
+                        if memberInfoRole and memberInfoRole ~= "" then r = memberInfoRole end
                     end
                     if r then
                         table.insert(finalRoles, r)
@@ -728,8 +920,8 @@ local function GetPlayers(resultID, leaderName)
 
                     -- Fallback to MemberInfo (returns multiple values, first is role string)
                     if #finalRoles == 0 and C_LFGList.GetSearchResultMemberInfo then
-                        local r = C_LFGList.GetSearchResultMemberInfo(resultID, i)
-                        if type(r) == "string" and r ~= "" then table.insert(finalRoles, r) end
+                        local r = SafeString(C_LFGList.GetSearchResultMemberInfo(resultID, i), nil)
+                        if r and r ~= "" then table.insert(finalRoles, r) end
                     end
                     
                     -- Fallback to leader base role
@@ -742,7 +934,7 @@ local function GetPlayers(resultID, leaderName)
 
                 table.insert(players, {
                     name = clean,
-                    class = player.classFilename,
+                    class = SafeString(player.classFilename, nil),
                     roles = finalRoles,
                 })
             end
@@ -752,9 +944,10 @@ local function GetPlayers(resultID, leaderName)
     -- Fallback leader (if info.numMembers was completely missing/0)
     if #players == 0 then
         local leader = C_LFGList.GetSearchResultLeaderInfo(resultID)
-        if leader and leader.name then
+        if leader and not IsSecretTable(leader) then
+            local leaderRawName = SafeString(leader.name, nil) or "Hidden Player 1"
             local finalRoles = GetPlayerRoleFlags(leader)
-            
+
             if #finalRoles == 0 and C_LFGList.GetSearchResultMemberCounts then
                 local counts = C_LFGList.GetSearchResultMemberCounts(resultID)
                 if counts then
@@ -769,12 +962,12 @@ local function GetPlayers(resultID, leaderName)
                 if r then table.insert(finalRoles, r) end
             end
             if #finalRoles == 0 and C_LFGList.GetSearchResultMemberInfo then
-                local r = C_LFGList.GetSearchResultMemberInfo(resultID, 1)
-                if type(r) == "string" and r ~= "" then table.insert(finalRoles, r) end
+                local r = SafeString(C_LFGList.GetSearchResultMemberInfo(resultID, 1), nil)
+                if r and r ~= "" then table.insert(finalRoles, r) end
             end
             table.insert(players, {
-                name = Ambiguate(leader.name, "none"),
-                class = leader.classFilename,
+                name = Ambiguate(leaderRawName, "none"),
+                class = SafeString(leader.classFilename, nil),
                 roles = finalRoles,
             })
         end
@@ -853,6 +1046,42 @@ local ACTIVITY_ABBREV = {
     ["sunwell plateau"]        = "SWP",
     ["zul'aman"]               = "ZA",
     ["zulaman"]                = "ZA",
+
+    -- Onyxia's Lair is a long-standing omission from the Burning Crusade
+    -- list above (it's a Vanilla raid that stuck around into BC and every
+    -- version since). Added here rather than Forever-gated, but it's
+    -- especially relevant to Forever, which keeps Onyxia's Lair as its
+    -- one 40-player raid alongside the two new smaller raids below.
+    ["onyxia's lair"]          = "Ony",
+    ["onyxias lair"]           = "Ony",
+    ["onyxia"]                 = "Ony",
+
+    -- World of Warcraft: Forever (beta, launching Nov 4 2026) -- its nine
+    -- new leveling dungeons and two new raids. Names/levels are current as
+    -- of the Forever beta client; Blizzard can still rename or re-theme
+    -- any of these before/after the Nov 4 2026 launch, so double-check
+    -- against in-game listings if an abbreviation stops matching.
+    ["hall of thanes"]             = "HoT",       -- levels 13-18, beneath Ironforge
+    ["ruins of lordaeron"]         = "RoL",        -- levels 15-20
+    ["excavation site: wetlands"]  = "ExcW",       -- levels 24-29, above Whelgar's Excavation
+    ["excavation site"]            = "ExcW",
+    ["city of dalaran"]            = "CoD",        -- levels 28-33
+    ["the drowned city"]           = "TDC",        -- levels 35-40
+    ["krol'dok stronghold"]        = "KDS",        -- levels 40-45, Riverglades
+    ["kroldok stronghold"]         = "KDS",
+    ["alcaz island prison"]        = "AP",         -- levels 48-53, Alcaz Island
+    ["alcaz prison"]               = "AP",
+    ["blackmaw hold"]              = "BMH",        -- levels 55-60, northern Azshara
+    ["shaper's terrace"]           = "ShT",        -- levels 58-60, Un'Goro Crater
+    ["shapers terrace"]            = "ShT",
+
+    -- Forever's two new raids unlock Dec 9 2026, five weeks after launch.
+    -- "Hyjal Summit" is deliberately a different tag from the existing
+    -- "Hyjal" above (Burning Crusade's Battle for Mount Hyjal) -- they are
+    -- two unrelated instances that both involve Mount Hyjal.
+    ["hyjal summit"]               = "HyS",        -- 20-player raid
+    ["the barrow deeps"]           = "BD",         -- 10-player raid
+    ["barrow deeps"]               = "BD",
 }
 
 -- Case-insensitive-pattern builder: turns a plain lowercase key like
@@ -895,6 +1124,10 @@ end
 -- anything in the table passes through completely untouched.
 local function AbbreviateMentions(text)
     if not text or text == "" then return text end
+    -- Defensive: every caller already runs raw API text through SafeString
+    -- before it reaches here, but guard again in case this is ever called
+    -- directly with something un-sanitized.
+    if IsSecretValue(text) then return "" end
 
     text = text:gsub("\226\128\153", "'")  -- normalize curly apostrophe to straight
     
@@ -939,11 +1172,19 @@ local function BuildGroups()
 
     for _, resultID in ipairs(results) do
         local info = C_LFGList.GetSearchResultInfo(resultID)
-        if info and not info.isDelisted then
+        -- A fully "secret" info table (possible under Forever's chat-
+        -- messaging lockdown) can't be indexed at all -- skip the result for
+        -- this refresh pass rather than erroring; it reappears once the
+        -- restriction clears and the next LFG_LIST_SEARCH_RESULT_UPDATED
+        -- fires.
+        if info and not IsSecretTable(info) and not SafeFlag(info.isDelisted) then
             local leaderName = "Unknown"
             local leader = C_LFGList.GetSearchResultLeaderInfo(resultID)
-            if leader and leader.name then
-                leaderName = Ambiguate(leader.name, "none")
+            if leader and not IsSecretTable(leader) then
+                local rawLeaderName = SafeString(leader.name, nil)
+                if rawLeaderName then
+                    leaderName = Ambiguate(rawLeaderName, "none")
+                end
             end
 
             -- What the group is listed for.
@@ -951,7 +1192,7 @@ local function BuildGroups()
             -- activities. Collect all of their names, deduped.
             local listed = ""
             local ids = {}
-            if info.activityIDs then
+            if info.activityIDs and not IsSecretTable(info.activityIDs) then
                 for _, v in ipairs(info.activityIDs) do
                     ids[#ids + 1] = v
                 end
@@ -964,13 +1205,13 @@ local function BuildGroups()
             for _, aid in ipairs(ids) do
                 local n
                 if C_LFGList.GetActivityInfoTable then
-                    local act = C_LFGList.GetActivityInfoTable(aid, nil, info.isWarMode)
-                    if act then
-                        n = act.fullName or act.shortName
+                    local act = C_LFGList.GetActivityInfoTable(aid, nil, SafeFlag(info.isWarMode))
+                    if act and not IsSecretTable(act) then
+                        n = SafeString(act.fullName, nil) or SafeString(act.shortName, nil)
                     end
                 end
                 if (not n or n == "") and C_LFGList.GetActivityInfo then
-                    n = C_LFGList.GetActivityInfo(aid)
+                    n = SafeString(C_LFGList.GetActivityInfo(aid), nil)
                 end
                 if n and n ~= "" then
                     n = AbbreviateMentions(n)
@@ -983,7 +1224,7 @@ local function BuildGroups()
             listed = table.concat(names, ", ")
 
             -- Append the leader's custom title if present and different
-            local title = info.name
+            local title = SafeString(info.name, nil)
             if title and title ~= "" then
                 title = AbbreviateMentions(title)
                 if listed == "" then
@@ -1004,7 +1245,7 @@ local function BuildGroups()
             end
 
             local primaryRoleWeight = 4
-            if (info.numMembers or 0) == 1 and players[1] and players[1].roles then
+            if (SafeFlag(info.numMembers) or 0) == 1 and players[1] and players[1].roles then
                 local hasT, hasH, hasD = false, false, false
                 for _, r in ipairs(players[1].roles) do
                     if r == "TANK" then hasT = true end
@@ -1025,9 +1266,13 @@ local function BuildGroups()
                 resultID = resultID,
                 foldKey = foldKey,
                 leader = leaderName,
-                members = info.numMembers or 0,
+                members = SafeFlag(info.numMembers) or 0,
                 listed = listed or "",
-                description = info.comment or "",
+                -- The comment can be a secret string under Forever's
+                -- lockdown as well as Blizzard's older "protected" comment
+                -- strings (see the note by row.desc's creation above) --
+                -- either way it's display-only, so a safe fallback is fine.
+                description = SafeString(info.comment, ""),
                 players = players,
                 hasTrinket = hasTrinket,
                 primaryRoleWeight = primaryRoleWeight,
@@ -1176,9 +1421,9 @@ function RefreshWindow()
                 btn:SetText(player.name)
 
                 local fs = btn:GetFontString()
-                if player.class and CLASS_COLORS[player.class] then
-                    local c = CLASS_COLORS[player.class]
-                    fs:SetTextColor(c.r, c.g, c.b)
+                local classColor = GetClassColor(player.class)
+                if classColor then
+                    fs:SetTextColor(classColor.r, classColor.g, classColor.b)
                 else
                     fs:SetTextColor(1, 1, 1)
                 end
@@ -1343,6 +1588,30 @@ SlashCmdList["LFGCOPY"] = ToggleLFGCopy
 -- API, with no interpretation. Use this to see ground truth if role icons
 -- still look wrong -- paste the output back so the resolver can be
 -- corrected against real data instead of guesses.
+-- Dumps every key/value of a table safely, even on a client with the
+-- secret-value system: a secret TABLE can't be iterated at all (pairs()
+-- itself would error), and an individual secret VALUE can usually still be
+-- handed to tostring()/print() but is flagged as such so you know not to
+-- trust it for matching/filtering.
+local function DumpTableSafely(t)
+    if type(t) ~= "table" then
+        print(tostring(t))
+        return
+    end
+    if IsSecretTable(t) then
+        print("<entire table is a secret value -- likely a Forever chat-messaging lockdown; can't be iterated>")
+        return
+    end
+    for k, v in pairs(t) do
+        if IsSecretValue(v) then
+            local ok, shown = pcall(tostring, v)
+            print(k, "SECRET VALUE" .. (ok and (" (tostring: " .. shown .. ")") or ""))
+        else
+            print(k, tostring(v))
+        end
+    end
+end
+
 SLASH_LFGCOPYROLES1 = "/lfgcopyroles"
 SlashCmdList["LFGCOPYROLES"] = function()
 
@@ -1361,13 +1630,10 @@ SlashCmdList["LFGCOPYROLES"] = function()
         local info = C_LFGList.GetSearchResultInfo(resultID)
         if info then
             print("----- SEARCH RESULT INFO -----")
-            for k,v in pairs(info) do
-                print(k, tostring(v))
-            end
-
+            DumpTableSafely(info)
         end
 
-        local members = (info and info.numMembers) or 0
+        local members = (info and SafeFlag(info.numMembers)) or 0
 
         for i = 1, members do
 
@@ -1375,9 +1641,7 @@ SlashCmdList["LFGCOPYROLES"] = function()
 
             local player = C_LFGList.GetSearchResultPlayerInfo(resultID, i)
             if player then
-                for k,v in pairs(player) do
-                    print(k, tostring(v))
-                end
+                DumpTableSafely(player)
             else
                 print("nil")
             end
@@ -1388,16 +1652,30 @@ SlashCmdList["LFGCOPYROLES"] = function()
                 local member = C_LFGList.GetSearchResultMemberInfo(resultID, i)
 
                 if type(member) == "table" then
-                    for k,v in pairs(member) do
-                        print(k, tostring(v))
-                    end
+                    DumpTableSafely(member)
                 else
-                    print(tostring(member))
+                    print(IsSecretValue(member) and "SECRET VALUE" or tostring(member))
                 end
             end
 
         end
     end
+end
+
+-- Quick environment probe, mainly useful for checking whether LFGcopy has
+-- correctly identified a World of Warcraft: Forever client (or any other
+-- client) and whether the secret-value system is active, without having to
+-- dig through /lfgcopyroles output. Report this output when filing a bug.
+SLASH_LFGCOPYCLIENT1 = "/lfgcopyclient"
+SlashCmdList["LFGCOPYCLIENT"] = function()
+    local build, buildNum, buildDate, interfaceVersion = GetBuildInfo()
+    print("|cff00ff00[LFGcopy]|r client probe:")
+    print("  WOW_PROJECT_ID:", tostring(WOW_PROJECT_ID))
+    print("  Build / interface:", tostring(build), "/", tostring(interfaceVersion))
+    print("  Detected as WoW Forever:", tostring(IS_FOREVER))
+    print("  Secret-value system present:", tostring(type(issecretvalue) == "function"))
+    print("  MenuUtil context menu available:", tostring(MenuUtil ~= nil and MenuUtil.CreateContextMenu ~= nil))
+    print("  ChatFrame_SendTell available:", tostring(ChatFrame_SendTell ~= nil or (ChatFrameUtil and ChatFrameUtil.SendTell ~= nil)))
 end
 
 -- Fallback clickable button used only if Bindings.xml is not loaded.
@@ -1466,4 +1744,6 @@ addon:SetScript("OnEvent", function(self, event, ...)
     end
 end)
 
-print("|cff00ff00LFGcopy v6.2 loaded. Use /lfgcopy or Alt+I|r")
+print("|cff00ff00LFGcopy v6.3 loaded"
+    .. (IS_FOREVER and " (WoW Forever detected)" or "")
+    .. ". Use /lfgcopy or Alt+I. /lfgcopyclient for a compatibility probe.|r")
