@@ -109,17 +109,28 @@ in several ways:
 
 ### How detection works
 
-Forever reports `WOW_PROJECT_ID == WOW_PROJECT_MAINLINE`, exactly like real
-Retail, but carries a low, vanilla-shaped Interface number (`16001` for beta
+Forever carries a low, vanilla-shaped Interface number (`16001` for beta
 build 1.60.1 — it's computed as `major*10000 + minor*100 + patch`, so it
-ticks up slightly with every point release: `16002` for 1.60.2, and so on).
-Neither fact alone identifies the client — Classic Era/SoD/Anniversary also
-have a low Interface number (just under a different `WOW_PROJECT_ID`), and
-real Retail also reports `WOW_PROJECT_MAINLINE` (just with a much higher
-Interface number). LFGcopy checks the *pair* of values together, which is
-unique to Forever. Run `/lfgcopyclient` in-game to see exactly what LFGcopy
-detected (client build, Interface number, whether Forever was recognized,
-and whether the secret-value system described below is active).
+ticks up slightly with every point release: `16002` for 1.60.2, and so on),
+paired with a `WOW_PROJECT_ID` that identifies it as part of the modern
+Mainline/Camelot API family rather than Classic Era/BC Classic/etc.
+
+**Blizzard changed that project id partway through the beta.** Early builds
+(through roughly 1.60.1.70124) had Forever report
+`WOW_PROJECT_ID == WOW_PROJECT_MAINLINE` (`1`), identical to real Retail.
+Starting with build 1.60.1.70170, Forever got its own id — `18`, exposed on
+clients that define the global as `WOW_PROJECT_CAMELOT` ("Camelot" is
+Forever's internal codename). LFGcopy's detection accepts **either** id
+(falling back to the literal `18` if `WOW_PROJECT_CAMELOT` isn't defined as
+a global on a given client), combined with the low Interface number — the
+Interface check is still required because real Retail can also report the
+Mainline id, just with a much higher Interface number, and Classic Era/SoD/
+Anniversary have a low Interface number under yet other project ids. Run
+`/lfgcopyclient` in-game to see exactly what LFGcopy detected (project id,
+client build, Interface number, whether Forever was recognized, and whether
+the secret-value system described below is active) — report that output if
+detection ever seems wrong after a Forever client update, since Blizzard
+could change the id again while it's still in beta.
 
 ### What's adapted for Forever
 
@@ -224,7 +235,7 @@ Arriving Dec 9, 2026 (five weeks after launch):
 2. Make sure the folder is named exactly:
    - Interface/AddOns/LFGcopy
 3. Reload your UI or restart the game.
-4. After installing this update, `/reload` should announce **LFGcopy v6.5.0** in chat. An older version number means older files are installed.
+4. After installing this update, `/reload` should announce **LFGcopy v6.5.1** in chat. An older version number means older files are installed.
 5. Open the addon with:
    - /lfgcopy
    - or use the default keybind Alt+I
@@ -284,6 +295,7 @@ lua tests/ui_regressions.lua
 lua tests/persistence_regressions.lua
 lua tests/copy_popup_regressions.lua
 lua tests/paladin_tank_filter_regressions.lua
+lua tests/forever_detection_regressions.lua
 ```
 
 The tests use mocked WoW APIs/widgets to check full description sizing, reused rows, permanent tabs, saved defaults, reload/relog state, full-length copying after a note popup reuses the same edit box, and (Forever-only) the Paladin-tank filter's detection logic and interaction with the other filters. Actual rendering and disk saving still need an in-game check.

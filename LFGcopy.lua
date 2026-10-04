@@ -41,19 +41,27 @@ end
 -- "Classic+" game line (beta started Sept 17 2026, launching Nov 4 2026).
 -- It matters to LFGcopy for three unrelated reasons:
 --
--- 1. Client/API identification is backwards. Forever runs the modern
---    "Mainline" addon API (same family as Retail: MenuUtil, C_LFGList with
---    the newer multi-activityIDs shape, etc.) and reports
---    WOW_PROJECT_ID == WOW_PROJECT_MAINLINE, exactly like real Retail.
---    BUT its TOC "## Interface" number is vanilla-shaped and LOW (16001 as
---    of beta build 1.60.1; it's generated as major*10000+minor*100+patch,
---    so it ticks up slightly with every point release -- 16002 for 1.60.2,
---    and so on). That means neither "WOW_PROJECT_ID == MAINLINE" nor
---    "interface number is small" alone tells you anything (Classic Era/
---    SoD/Anniversary also have a small interface number, just under a
---    different project id; real Retail has WOW_PROJECT_MAINLINE too, just
---    with a much bigger interface number). The PAIR is what's unique to
---    Forever, so that's what IsForeverClient() below checks.
+-- 1. Client/API identification is backwards, and the goalposts moved once
+--    already. Forever runs the modern "Mainline" addon API (same family as
+--    Retail: MenuUtil, C_LFGList with the newer multi-activityIDs shape,
+--    etc.). Early Forever beta builds (through roughly 1.60.1.70124)
+--    reported WOW_PROJECT_ID == WOW_PROJECT_MAINLINE, exactly like real
+--    Retail. Starting with build 1.60.1.70170, Blizzard gave Forever its
+--    OWN project id -- 18, exposed on current clients as the global
+--    WOW_PROJECT_CAMELOT ("Camelot" is Forever's internal/package-tooling
+--    codename). So IsForeverClient() below accepts EITHER id. Meanwhile its
+--    TOC "## Interface" number is vanilla-shaped and LOW (16001 as of beta
+--    build 1.60.1; it's generated as major*10000+minor*100+patch, so it
+--    ticks up slightly with every point release -- 16002 for 1.60.2, and so
+--    on). Neither signal alone tells you anything (Classic Era/SoD/
+--    Anniversary also have a small interface number, just under yet other
+--    project ids; real Retail can report WOW_PROJECT_MAINLINE too, just
+--    with a much bigger interface number). The PAIR -- a Forever-shaped
+--    project id AND a low interface number -- is what's unique to Forever,
+--    so that's what IsForeverClient() below checks. Since Forever is still
+--    in beta, Blizzard could change the project id again; if detection
+--    stops working after a client update, run /lfgcopyclient and compare
+--    against the values this function expects.
 --
 -- 2. Two-part, realmless character names. Forever has no realms, so every
 --    character is identified by a two-word "First Last" display name
@@ -78,15 +86,22 @@ end
 --    else touches it. This is harmless (a no-op) on clients that don't
 --    have the secret-value system at all, like BC Classic.
 local WOW_PROJECT_MAINLINE_SAFE = WOW_PROJECT_MAINLINE or 1
+-- Forever's own project id, added partway through the beta (see point 1
+-- above). WOW_PROJECT_CAMELOT doesn't exist as a global on clients shipped
+-- before Blizzard added it, so fall back to the literal id (18) it's known
+-- to use.
+local WOW_PROJECT_CAMELOT_SAFE = WOW_PROJECT_CAMELOT or 18
 
 local function IsForeverClient()
-    if not WOW_PROJECT_ID or WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE_SAFE then
+    if not WOW_PROJECT_ID then return false end
+    if WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE_SAFE
+        and WOW_PROJECT_ID ~= WOW_PROJECT_CAMELOT_SAFE then
         return false
     end
     local interfaceVersion = select(4, GetBuildInfo())
     -- Real Retail is comfortably above 50000 (110000+ as of 2026); Forever
-    -- is still vanilla-versioned (16001-ish). Anything Mainline-flagged but
-    -- below that line is Forever.
+    -- is still vanilla-versioned (16001-ish). Anything Mainline/Camelot-
+    -- flagged but below that line is Forever.
     return (interfaceVersion or 0) > 0 and interfaceVersion < 50000
 end
 
@@ -2459,7 +2474,9 @@ SLASH_LFGCOPYCLIENT1 = "/lfgcopyclient"
 SlashCmdList["LFGCOPYCLIENT"] = function()
     local build, buildNum, buildDate, interfaceVersion = GetBuildInfo()
     print("|cff00ff00[LFGcopy]|r client probe:")
-    print("  WOW_PROJECT_ID:", tostring(WOW_PROJECT_ID))
+    print("  WOW_PROJECT_ID:", tostring(WOW_PROJECT_ID),
+        "(Forever-shaped ids known to LFGcopy: " .. tostring(WOW_PROJECT_MAINLINE_SAFE)
+        .. " or " .. tostring(WOW_PROJECT_CAMELOT_SAFE) .. ")")
     print("  Build / interface:", tostring(build), "/", tostring(interfaceVersion))
     print("  Detected as WoW Forever:", tostring(IS_FOREVER))
     print("  Secret-value system present:", tostring(type(issecretvalue) == "function"))
@@ -2544,6 +2561,6 @@ addon:SetScript("OnEvent", function(self, event, ...)
     end
 end)
 
-print("|cff00ff00LFGcopy v6.5.0 loaded."
+print("|cff00ff00LFGcopy v6.5.1 loaded."
     .. (IS_FOREVER and " (WoW Forever detected)." or "")
     .. " Use /lfgcopy or Alt+I. /lfgcopyclient for a compatibility probe.|r")
