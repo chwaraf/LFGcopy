@@ -83,6 +83,15 @@ Player role icons are shown based on the role data returned by the game API. The
 
 The addon has a "Trinket: ON/OFF" toggle that highlights groups containing a mage who is marked as owning a trinket. It looks for a global table of mage names from another addon's saved data, with a built-in fallback list.
 
+### Paladin tank filter (WoW Forever only)
+
+On WoW Forever, a second toggle button ("Pala Tank: ON/OFF") appears next to
+the Trinket toggle. Turning it on hides every group that doesn't have at
+least one Paladin occupying the tank role, using the same per-member
+class/role data the group display already builds (see "Role handling"
+above). This button doesn't exist at all on other supported clients — see
+the Forever section below for why.
+
 ## Supported game versions
 
 - Burning Crusade Classic (Interface 20505) — the original target.
@@ -163,6 +172,14 @@ and whether the secret-value system described below is active).
   without trying to append a realm on Forever, since Forever's two-part
   names are already unique per region. This also avoids feeding a possibly
   "secret" raw name straight into the key-building/SavedVariables code.
+- **"Pala Tank" filter toggle.** Forever's talent trees let Paladins
+  meaningfully tank its Classic-style dungeons and raids from level 60
+  (unlike vanilla/BC Classic, where Protection Paladins essentially never
+  tank), so "only show groups that actually have a Paladin tank" is a
+  filter that's only useful there. The toggle button is created only when
+  `IS_FOREVER` is detected; it's completely absent on every other client,
+  and the rest of the title-bar layout (search box position, etc.) adjusts
+  automatically whether or not it's present.
 
 ### What's still a best guess
 
@@ -207,7 +224,7 @@ Arriving Dec 9, 2026 (five weeks after launch):
 2. Make sure the folder is named exactly:
    - Interface/AddOns/LFGcopy
 3. Reload your UI or restart the game.
-4. After installing this update, `/reload` should announce **LFGcopy v6.4.1** in chat. An older version number means older files are installed.
+4. After installing this update, `/reload` should announce **LFGcopy v6.5.0** in chat. An older version number means older files are installed.
 5. Open the addon with:
    - /lfgcopy
    - or use the default keybind Alt+I
@@ -266,9 +283,10 @@ From the repository root with Lua 5.1 or later, run:
 lua tests/ui_regressions.lua
 lua tests/persistence_regressions.lua
 lua tests/copy_popup_regressions.lua
+lua tests/paladin_tank_filter_regressions.lua
 ```
 
-The tests use mocked WoW APIs/widgets to check full description sizing, reused rows, permanent tabs, saved defaults, reload/relog state, and full-length copying after a note popup reuses the same edit box. Actual rendering and disk saving still need an in-game check.
+The tests use mocked WoW APIs/widgets to check full description sizing, reused rows, permanent tabs, saved defaults, reload/relog state, full-length copying after a note popup reuses the same edit box, and (Forever-only) the Paladin-tank filter's detection logic and interaction with the other filters. Actual rendering and disk saving still need an in-game check.
 
 ## Author
 

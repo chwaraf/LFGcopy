@@ -2,7 +2,7 @@
 ## Title: LFGcopy
 ## Notes: Copy LFG names/links, class colors, abbreviated dungeon/raid tags, smarter roles, Primo/Secundo tabs. Supports Burning Crusade Classic and World of Warcraft: Forever.
 ## Author: ChatGPT
-## Version: 6.4.1
+## Version: 6.5.0
 ## SavedVariables: LFGcopyDB
 ## SavedVariablesPerCharacter: LFGcopyCharDB
 

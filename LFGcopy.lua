@@ -624,40 +624,46 @@ local trinketToggle = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
 trinketToggle:SetSize(110, 20)
 trinketToggle:SetPoint("RIGHT", frame.TitleBg, "RIGHT", -24, 0)
 
--- Pulsing glow border (4 edge strips) shown only while the filter is ON.
--- A holder frame lets all 4 edges pulse together via one animation group.
-local glow = CreateFrame("Frame", nil, trinketToggle)
-glow:SetPoint("TOPLEFT", trinketToggle, "TOPLEFT", -2, 2)
-glow:SetPoint("BOTTOMRIGHT", trinketToggle, "BOTTOMRIGHT", 2, -2)
-glow:Hide()
-local function gedge()
-    local t = glow:CreateTexture(nil, "OVERLAY")
-    t:SetColorTexture(1, 0.55, 0, 1)  -- orange
-    return t
-end
-local gThick = 2
-local gT, gB, gL, gR = gedge(), gedge(), gedge(), gedge()
-gT:SetPoint("TOPLEFT", glow, "TOPLEFT", 0, 0)
-gT:SetPoint("TOPRIGHT", glow, "TOPRIGHT", 0, 0)
-gT:SetHeight(gThick)
-gB:SetPoint("BOTTOMLEFT", glow, "BOTTOMLEFT", 0, 0)
-gB:SetPoint("BOTTOMRIGHT", glow, "BOTTOMRIGHT", 0, 0)
-gB:SetHeight(gThick)
-gL:SetPoint("TOPLEFT", glow, "TOPLEFT", 0, 0)
-gL:SetPoint("BOTTOMLEFT", glow, "BOTTOMLEFT", 0, 0)
-gL:SetWidth(gThick)
-gR:SetPoint("TOPRIGHT", glow, "TOPRIGHT", 0, 0)
-gR:SetPoint("BOTTOMRIGHT", glow, "BOTTOMRIGHT", 0, 0)
-gR:SetWidth(gThick)
+-- Pulsing glow border (4 edge strips), reused by every filter toggle button
+-- so they all share one consistent "filter is ON" look. Each button gets
+-- its own holder frame/animation group so they pulse independently.
+local function CreateToggleGlow(button, r, g, b)
+    local glow = CreateFrame("Frame", nil, button)
+    glow:SetPoint("TOPLEFT", button, "TOPLEFT", -2, 2)
+    glow:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 2, -2)
+    glow:Hide()
+    local function gedge()
+        local t = glow:CreateTexture(nil, "OVERLAY")
+        t:SetColorTexture(r, g, b, 1)
+        return t
+    end
+    local gThick = 2
+    local gT, gB, gL, gR = gedge(), gedge(), gedge(), gedge()
+    gT:SetPoint("TOPLEFT", glow, "TOPLEFT", 0, 0)
+    gT:SetPoint("TOPRIGHT", glow, "TOPRIGHT", 0, 0)
+    gT:SetHeight(gThick)
+    gB:SetPoint("BOTTOMLEFT", glow, "BOTTOMLEFT", 0, 0)
+    gB:SetPoint("BOTTOMRIGHT", glow, "BOTTOMRIGHT", 0, 0)
+    gB:SetHeight(gThick)
+    gL:SetPoint("TOPLEFT", glow, "TOPLEFT", 0, 0)
+    gL:SetPoint("BOTTOMLEFT", glow, "BOTTOMLEFT", 0, 0)
+    gL:SetWidth(gThick)
+    gR:SetPoint("TOPRIGHT", glow, "TOPRIGHT", 0, 0)
+    gR:SetPoint("BOTTOMRIGHT", glow, "BOTTOMRIGHT", 0, 0)
+    gR:SetWidth(gThick)
 
--- pulse animation: fade the whole border in/out forever
-local pulse = glow:CreateAnimationGroup()
-pulse:SetLooping("BOUNCE")
-local fade = pulse:CreateAnimation("Alpha")
-fade:SetFromAlpha(1.0)
-fade:SetToAlpha(0.2)
-fade:SetDuration(0.6)
-fade:SetSmoothing("IN_OUT")
+    -- pulse animation: fade the whole border in/out forever
+    local pulse = glow:CreateAnimationGroup()
+    pulse:SetLooping("BOUNCE")
+    local fade = pulse:CreateAnimation("Alpha")
+    fade:SetFromAlpha(1.0)
+    fade:SetToAlpha(0.2)
+    fade:SetDuration(0.6)
+    fade:SetSmoothing("IN_OUT")
+    return glow, pulse
+end
+
+local glow, pulse = CreateToggleGlow(trinketToggle, 1, 0.55, 0) -- orange
 
 local function UpdateTrinketToggle()
     if filterTrinketOnly then
@@ -685,10 +691,52 @@ end)
 trinketToggle:SetScript("OnLeave", function() GameTooltip:Hide() end)
 UpdateTrinketToggle()
 
--- Search box (left of the toggle, vertically centered on the title bar)
+-- "Paladin tank only" toggle -- WoW Forever specific. Forever's talent
+-- trees let Paladins tank its Classic-style dungeons/raids from level 60
+-- (unlike vanilla/BC Classic, where Protection Paladins essentially never
+-- tank), so "does this group actually have a Paladin tank" is a filter
+-- that's only meaningful there. The button is only created on Forever;
+-- on every other client this is entirely absent, same layout as before.
+local filterPaladinTankOnly = false
+local paladinTankToggle
+if IS_FOREVER then
+    paladinTankToggle = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    paladinTankToggle:SetSize(120, 20)
+    paladinTankToggle:SetPoint("RIGHT", trinketToggle, "LEFT", -6, 0)
+
+    local palaGlow, palaPulse = CreateToggleGlow(paladinTankToggle, 0.95, 0.85, 0.2) -- holy gold
+
+    local function UpdatePaladinTankToggle()
+        if filterPaladinTankOnly then
+            paladinTankToggle:SetText("Pala Tank: ON")
+            palaGlow:Show()
+            palaPulse:Play()
+        else
+            paladinTankToggle:SetText("Pala Tank: Off")
+            palaPulse:Stop()
+            palaGlow:Hide()
+        end
+    end
+
+    paladinTankToggle:SetText("Pala Tank: Off")
+    paladinTankToggle:SetScript("OnClick", function(self)
+        filterPaladinTankOnly = not filterPaladinTankOnly
+        UpdatePaladinTankToggle()
+        if RefreshWindow then RefreshWindow() end
+    end)
+    paladinTankToggle:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOMLEFT")
+        GameTooltip:AddLine("Show only groups with a Paladin tank (WoW Forever)")
+        GameTooltip:Show()
+    end)
+    paladinTankToggle:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    UpdatePaladinTankToggle()
+end
+
+-- Search box (left of the toggles, vertically centered on the title bar)
 local searchBox = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
 searchBox:SetSize(150, 20)
-searchBox:SetPoint("RIGHT", trinketToggle, "LEFT", -12, 0)
+searchBox:SetPoint("RIGHT", paladinTankToggle or trinketToggle, "LEFT", -12, 0)
 searchBox:SetAutoFocus(false)
 searchBox:SetMaxLetters(40)
 searchBox:SetScript("OnTextChanged", function(self)
@@ -698,6 +746,7 @@ end)
 searchBox:SetScript("OnEscapePressed", function(self)
     self:SetText("")
     self:ClearFocus()
+
 end)
 searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 
@@ -1917,9 +1966,25 @@ end
 -------------------------------------------------
 -- Refresh
 -------------------------------------------------
+-- True if any member of this group is a Paladin occupying the tank role.
+-- Used only by the Forever-specific "Pala Tank" toggle above.
+local function GroupHasPaladinTank(group)
+    for _, p in ipairs(group.players or {}) do
+        if p.class == "PALADIN" and p.roles then
+            for _, r in ipairs(p.roles) do
+                if r == "TANK" then return true end
+            end
+        end
+    end
+    return false
+end
+
 -- Returns true if a group passes the active filters
 local function GroupMatchesFilters(group)
     if filterTrinketOnly and not group.hasTrinket then
+        return false
+    end
+    if filterPaladinTankOnly and not GroupHasPaladinTank(group) then
         return false
     end
     if filterSearch ~= "" then
@@ -2479,6 +2544,6 @@ addon:SetScript("OnEvent", function(self, event, ...)
     end
 end)
 
-print("|cff00ff00LFGcopy v6.4.1 loaded."
+print("|cff00ff00LFGcopy v6.5.0 loaded."
     .. (IS_FOREVER and " (WoW Forever detected)." or "")
     .. " Use /lfgcopy or Alt+I. /lfgcopyclient for a compatibility probe.|r")
